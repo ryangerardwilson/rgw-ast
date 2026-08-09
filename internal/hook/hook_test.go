@@ -67,3 +67,67 @@ func TestLeadingTokens(t *testing.T) {
 		t.Fatal("arg only")
 	}
 }
+
+func TestHookDeniesCompoundOrEvaluatedRgwAst(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n//1\n//2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.ThresholdLOC = 1
+	cfg.Cache.Dir = t.TempDir()
+
+	commands := []string{
+		"rgw-ast status; printf x > f",
+		"rgw-ast status && rm -rf target",
+		"rgw-ast status | tee f",
+		"rgw-ast status > f",
+		`rgw-ast status "$(printf x > f)"`,
+		"rgw-ast status `printf x > f`",
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			data, err := json.Marshal(Request{ToolName: "Bash", ToolInput: map[string]any{"command": command}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if err := Run(bytes.NewReader(data), &out, cfg, root, root); err != nil {
+				t.Fatal(err)
+			}
+			var dec Decision
+			if err := json.Unmarshal(out.Bytes(), &dec); err != nil {
+				t.Fatal(err)
+			}
+			if dec.PermissionDecision != "deny" {
+				t.Fatalf("expected deny for %q, got %s", command, out.String())
+			}
+		})
+	}
+}
+
+func TestHookAllowsQuotedRgwAstArguments(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n//1\n//2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.ThresholdLOC = 1
+	cfg.Cache.Dir = t.TempDir()
+	command := `rgw-ast patch f --old 'a;b' --new "c && d"`
+	data, err := json.Marshal(Request{ToolName: "Bash", ToolInput: map[string]any{"command": command}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Run(bytes.NewReader(data), &out, cfg, root, root); err != nil {
+		t.Fatal(err)
+	}
+	var dec Decision
+	if err := json.Unmarshal(out.Bytes(), &dec); err != nil {
+		t.Fatal(err)
+	}
+	if dec.PermissionDecision != "allow" {
+		t.Fatalf("expected allow for quoted content, got %s", out.String())
+	}
+}

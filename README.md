@@ -58,8 +58,14 @@ rgw-ast [--root <path>] hook
 - Search snippets truncate to 120 characters; use `--path` / `--glob` to scope.
 - Map understands Go, Bash, Markdown (headings/OpenSpec requirements), JSON keys,
   TOML sections, YAML keys, and light QML structure.
-- Trusted generators (OpenSpec, etc.) must run as `rgw-ast exec -- ...` using
-  patterns from global `generators.allow`.
+- Trusted generators (OpenSpec, etc.) must run as `rgw-ast exec -- ...`; global
+  `generators.allow` entries are exact token prefixes matched from argv[0].
+- The shell hook allows only a single direct rgw-ast invocation; compound
+  commands, redirection, and command substitution around it are denied.
+- Generator reports separate pre-existing dirty paths from content deltas and
+  compare ignored-path content before and after execution.
+- Doctor compares the embedded AGENTS block with canonical `agents-block`
+  output and recognizes hooks only from parsed command fields.
 
 ## Local verification
 

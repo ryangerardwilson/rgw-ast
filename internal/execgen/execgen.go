@@ -16,7 +16,7 @@ import (
 // Change is one path altered by a generator relative to pre-run state.
 type Change struct {
 	Path   string `json:"path"`
-	Status string `json:"status"` // created|modified|deleted|created_ignored
+	Status string `json:"status"` // created|modified|deleted|created_ignored|modified_ignored|deleted_ignored
 	Hash   string `json:"hash,omitempty"`
 }
 
@@ -59,12 +59,17 @@ func Run(root string, cfg config.Config, argv []string, enforced bool) (Report, 
 	}
 	sort.Strings(rep.PreExistingDirty)
 
-	// content identity of pre-existing paths for change detection
+	// Content identity of pre-existing paths detects changes even when their
+	// porcelain status remains unchanged or returns to clean.
 	beforeHash := map[string]string{}
 	for p, e := range before {
 		if e.Hash != "" {
 			beforeHash[p] = e.Hash
 		}
+	}
+	beforeIgnored, beforeIgnoredErr := ignoredSnapshot(root)
+	if beforeIgnoredErr != nil {
+		rep.AuditNotes = append(rep.AuditNotes, "before ignored snapshot unavailable: "+beforeIgnoredErr.Error())
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -88,17 +93,20 @@ func Run(root string, cfg config.Config, argv []string, enforced bool) (Report, 
 		rep.AuditNotes = append(rep.AuditNotes, "after porcelain unavailable: "+afterErr.Error())
 	}
 	rep.AfterPorcelain = afterText
-	rep.AuditComplete = beforeErr == nil && afterErr == nil
+	afterIgnored, afterIgnoredErr := ignoredSnapshot(root)
+	if afterIgnoredErr != nil {
+		rep.AuditNotes = append(rep.AuditNotes, "after ignored snapshot unavailable: "+afterIgnoredErr.Error())
+	}
+	rep.AuditComplete = beforeErr == nil && afterErr == nil && beforeIgnoredErr == nil && afterIgnoredErr == nil
 	if !rep.AuditComplete {
-		rep.AuditNotes = append(rep.AuditNotes, "audit incomplete without git porcelain")
+		rep.AuditNotes = append(rep.AuditNotes, "audit incomplete without before/after git and ignored snapshots")
 	}
 
 	rep.Changes = delta(root, before, after, beforeHash)
-
-	// ignored new files
-	ign, notes := observeIgnored(root, beforeHash)
-	rep.IgnoredObserved = ign
-	rep.AuditNotes = append(rep.AuditNotes, notes...)
+	rep.IgnoredObserved = ignoredDelta(beforeIgnored, afterIgnored)
+	if len(rep.IgnoredObserved) > 0 {
+		rep.AuditNotes = append(rep.AuditNotes, "ignored paths reported as before/after content deltas (not hash-guarded by default)")
+	}
 
 	return rep, nil
 }
@@ -154,44 +162,59 @@ func delta(root string, before, after map[string]entry, beforeHash map[string]st
 		}
 		// same content: do not attribute to generator
 	}
-	for path := range before {
+	for path, be := range before {
 		if _, ok := after[path]; ok {
 			continue
 		}
 		abs := filepath.Join(root, path)
 		if _, err := os.Stat(abs); os.IsNotExist(err) {
 			out = append(out, Change{Path: path, Status: "deleted"})
+			continue
+		}
+		// The path may have returned to a clean state. Compare its current
+		// content with the dirty pre-run snapshot before omitting it.
+		if ah, err := files.HashFile(abs); err == nil && be.Hash != "" && ah != be.Hash {
+			out = append(out, Change{Path: path, Status: "modified", Hash: ah})
 		}
 	}
-	// Detect brand-new tracked files that are clean after generator (not in porcelain):
-	// compare file existence via git ls-files --others is hard; use find new files with git status only.
+	// Brand-new files committed by a generator are outside porcelain after the
+	// run; AuditComplete covers the documented git working-tree surface only.
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
 }
 
-func observeIgnored(root string, beforeHash map[string]string) ([]Change, []string) {
+func ignoredSnapshot(root string) (map[string]entry, error) {
 	cmd := exec.Command("git", "-C", root, "status", "--porcelain=v1", "--ignored", "-uall")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, []string{"ignored observation unavailable"}
+		return nil, err
 	}
+	all := snapFromPorcelain(root, string(out))
+	ignored := make(map[string]entry)
+	for path, e := range all {
+		if strings.Contains(e.Status, "!") {
+			ignored[path] = e
+		}
+	}
+	return ignored, nil
+}
+
+func ignoredDelta(before, after map[string]entry) []Change {
 	var changes []Change
-	for path, st := range measure.ParsePorcelainPaths(string(out)) {
-		if !strings.Contains(st, "!") {
-			continue
+	for path, ae := range after {
+		be, existed := before[path]
+		switch {
+		case !existed:
+			changes = append(changes, Change{Path: path, Status: "created_ignored", Hash: ae.Hash})
+		case be.Hash != "" && ae.Hash != "" && be.Hash != ae.Hash:
+			changes = append(changes, Change{Path: path, Status: "modified_ignored", Hash: ae.Hash})
 		}
-		if _, ok := beforeHash[path]; ok {
-			continue
+	}
+	for path := range before {
+		if _, exists := after[path]; !exists {
+			changes = append(changes, Change{Path: path, Status: "deleted_ignored"})
 		}
-		c := Change{Path: path, Status: "created_ignored"}
-		if h, err := files.HashFile(filepath.Join(root, path)); err == nil {
-			c.Hash = h
-		}
-		changes = append(changes, c)
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
-	if len(changes) == 0 {
-		return nil, nil
-	}
-	return changes, []string{"ignored paths listed in ignored_observed (not hash-guarded by default)"}
+	return changes
 }

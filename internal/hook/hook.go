@@ -80,6 +80,9 @@ func Evaluate(req Request, cfg config.Config, cwd, rootOverride string) (Decisio
 
 	if isShellish(name) {
 		if isRGWAstInvocation(cmd) {
+			if hasShellEvaluationSyntax(cmd) {
+				return deny("enforced workspace: compound or evaluated shell syntax around rgw-ast is denied; invoke rgw-ast directly"), nil
+			}
 			return allow(), nil
 		}
 		if mutatesOutsideRGW(cmd) {
@@ -164,6 +167,56 @@ func isRGWAstInvocation(cmd string) bool {
 	}
 	base := filepath.Base(toks[0])
 	return base == "rgw-ast"
+}
+
+// hasShellEvaluationSyntax rejects shell constructs that can execute or write
+// outside the direct rgw-ast process. Quoted punctuation remains valid patch
+// content, but command substitution is still active inside double quotes.
+func hasShellEvaluationSyntax(cmd string) bool {
+	var quote byte
+	escaped := false
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quote == '\'' {
+			if c == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if quote == '"' {
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				quote = 0
+			case '`':
+				return true
+			case '$':
+				if i+1 < len(cmd) && cmd[i+1] == '(' {
+					return true
+				}
+			}
+			continue
+		}
+
+		switch c {
+		case '\\':
+			escaped = true
+		case '\'', '"':
+			quote = c
+		case ';', '|', '&', '>', '<', '\n', '\r', '`':
+			return true
+		case '$':
+			if i+1 < len(cmd) && cmd[i+1] == '(' {
+				return true
+			}
+		}
+	}
+	return quote != 0 || escaped
 }
 
 // leadingTokens extracts up to n shell-ish words, skipping VAR=value prefixes.

@@ -35,6 +35,18 @@ denying (hosts expect successful hook delivery).
 
 #### Scenario: Allow rgw-ast shell when enforced
 - **GIVEN** enforcement is active
-- **WHEN** stdin includes a shell command starting with `rgw-ast `
+- **WHEN** stdin includes a single shell command whose leading executable is `rgw-ast`
+- **AND** the command contains no unquoted control operator, redirection, or command substitution
 - **THEN** stdout JSON SHALL have `permissionDecision` equal to `allow`
 
+
+#### Scenario: Deny compound command after rgw-ast
+- **GIVEN** enforcement is active
+- **WHEN** stdin includes `rgw-ast status; printf x > f`
+- **THEN** stdout JSON SHALL have `permissionDecision` equal to `deny`
+
+#### Scenario: Allow quoted patch punctuation
+- **GIVEN** enforcement is active
+- **WHEN** an rgw-ast argument contains shell punctuation protected by single or double quotes
+- **AND** the command contains no command substitution
+- **THEN** stdout JSON SHALL have `permissionDecision` equal to `allow`

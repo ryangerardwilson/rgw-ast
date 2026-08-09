@@ -18,28 +18,28 @@ import (
 
 // Report is a bootstrap/readiness inspection for a workspace root.
 type Report struct {
-	OK                 bool     `json:"ok"`
-	Version            string   `json:"version"`
-	Commit             string   `json:"commit"`
-	BuildTime          string   `json:"build_time"`
-	ConfigPath         string   `json:"config_path"`
-	ConfigExists       bool     `json:"config_exists"`
-	Root               string   `json:"root"`
-	LOC                int      `json:"loc"`
-	Enforced           bool     `json:"enforced"`
-	Mode               string   `json:"mode"`
-	ThresholdLOC       int      `json:"threshold_loc"`
-	CacheHit           bool     `json:"cache_hit"`
-	GitIgnoreActive    bool     `json:"gitignore_active"`
-	NestedRepos         int      `json:"nested_repos_skipped"`
-	GitAvailable       bool     `json:"git_available"`
-	HookReady          bool     `json:"hook_ready"`
-	HookStatus         string   `json:"hook_status"` // ready|not_checked|missing
-	AgentsBlockReady   bool     `json:"agents_block_ready"`
-	AgentsBlockStatus  string   `json:"agents_block_status"` // current|missing|missing_block|stale|absent_file
-	GeneratorsAllow    int      `json:"generators_allow_count"`
-	Notes              []string `json:"notes,omitempty"`
-	Errors             []string `json:"errors,omitempty"`
+	OK                bool     `json:"ok"`
+	Version           string   `json:"version"`
+	Commit            string   `json:"commit"`
+	BuildTime         string   `json:"build_time"`
+	ConfigPath        string   `json:"config_path"`
+	ConfigExists      bool     `json:"config_exists"`
+	Root              string   `json:"root"`
+	LOC               int      `json:"loc"`
+	Enforced          bool     `json:"enforced"`
+	Mode              string   `json:"mode"`
+	ThresholdLOC      int      `json:"threshold_loc"`
+	CacheHit          bool     `json:"cache_hit"`
+	GitIgnoreActive   bool     `json:"gitignore_active"`
+	NestedRepos       int      `json:"nested_repos_skipped"`
+	GitAvailable      bool     `json:"git_available"`
+	HookReady         bool     `json:"hook_ready"`
+	HookStatus        string   `json:"hook_status"` // configured|not_checked
+	AgentsBlockReady  bool     `json:"agents_block_ready"`
+	AgentsBlockStatus string   `json:"agents_block_status"` // current|stale|missing_block|malformed|absent_file
+	GeneratorsAllow   int      `json:"generators_allow_count"`
+	Notes             []string `json:"notes,omitempty"`
+	Errors            []string `json:"errors,omitempty"`
 }
 
 // Run gathers diagnostics for cwd/rootOverride.
@@ -100,7 +100,7 @@ func Run(cfg config.Config, cfgPath, cwd, rootOverride string, refresh bool) Rep
 		rep.Notes = append(rep.Notes, "git not on PATH; dirty-tree fingerprint uses mtime sampling")
 	}
 
-	// AGENTS.md managed block check
+	// AGENTS.md managed block check against the canonical emitted block.
 	agentsPath := filepath.Join(ws, "AGENTS.md")
 	if data, err := os.ReadFile(agentsPath); err != nil {
 		rep.AgentsBlockStatus = "absent_file"
@@ -109,40 +109,23 @@ func Run(cfg config.Config, cfgPath, cwd, rootOverride string, refresh bool) Rep
 			rep.Notes = append(rep.Notes, "AGENTS.md missing; embed with: rgw-ast agents-block")
 		}
 	} else {
-		text := string(data)
-		hasBegin := strings.Contains(text, "<!-- rgw-ast:begin -->")
-		hasEnd := strings.Contains(text, "<!-- rgw-ast:end -->")
-		switch {
-		case hasBegin && hasEnd:
-			// compare core markers from canonical block
-			if strings.Contains(text, "rgw-ast status --json") && strings.Contains(text, "rgw-ast exec") {
-				rep.AgentsBlockStatus = "current"
-				rep.AgentsBlockReady = true
-			} else {
-				rep.AgentsBlockStatus = "stale"
-				rep.AgentsBlockReady = false
-				rep.Notes = append(rep.Notes, "AGENTS.md has rgw-ast markers but may be stale; refresh from: rgw-ast agents-block")
-			}
-		case hasBegin || hasEnd:
-			rep.AgentsBlockStatus = "malformed"
-			rep.AgentsBlockReady = false
-		default:
-			rep.AgentsBlockStatus = "missing_block"
-			rep.AgentsBlockReady = false
+		rep.AgentsBlockStatus, rep.AgentsBlockReady = agentsBlockState(string(data))
+		if rep.AgentsBlockStatus == "stale" {
+			rep.Notes = append(rep.Notes, "AGENTS.md rgw-ast block differs from canonical output; refresh from: rgw-ast agents-block")
 		}
 	}
-	_ = agents.Block // ensure package linked; canonical source of truth for agents-block command
 
-	// Host hooks: best-effort observation only — never claim ready without evidence.
+	// Host hooks: claim configured only for a parsed command field whose argv
+	// begins with rgw-ast hook. Mere prose or unrelated JSON strings are not evidence.
 	hookFound := false
 	for _, p := range []string{
 		filepath.Join(ws, ".codex", "hooks.json"),
 		filepath.Join(ws, ".claude", "settings.json"),
 		filepath.Join(ws, ".claude", "settings.local.json"),
 	} {
-		if data, err := os.ReadFile(p); err == nil && strings.Contains(string(data), "rgw-ast") {
+		if data, err := os.ReadFile(p); err == nil && hasConfiguredHook(data) {
 			hookFound = true
-			rep.Notes = append(rep.Notes, "found rgw-ast mention in "+p)
+			rep.Notes = append(rep.Notes, "found rgw-ast hook command in "+p)
 		}
 	}
 	if hookFound {
@@ -161,6 +144,85 @@ func Run(cfg config.Config, cfgPath, cwd, rootOverride string, refresh bool) Rep
 	// ok means diagnostics completed without hard errors — not that all readiness is green
 	rep.OK = len(rep.Errors) == 0
 	return rep
+}
+
+func agentsBlockState(text string) (string, bool) {
+	const begin = "<!-- rgw-ast:begin -->"
+	const end = "<!-- rgw-ast:end -->"
+	if strings.Count(text, begin) == 0 && strings.Count(text, end) == 0 {
+		return "missing_block", false
+	}
+	if strings.Count(text, begin) != 1 || strings.Count(text, end) != 1 {
+		return "malformed", false
+	}
+	start := strings.Index(text, begin)
+	endStart := strings.Index(text, end)
+	if start < 0 || endStart < start {
+		return "malformed", false
+	}
+	candidate := text[start : endStart+len(end)]
+	if normalizeManagedBlock(candidate) == normalizeManagedBlock(agents.Block) {
+		return "current", true
+	}
+	return "stale", false
+}
+
+func normalizeManagedBlock(text string) string {
+	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+}
+
+func hasConfiguredHook(data []byte) bool {
+	var document any
+	if err := json.Unmarshal(data, &document); err != nil {
+		return false
+	}
+	return containsHookCommand(document)
+}
+
+func containsHookCommand(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			switch strings.ToLower(key) {
+			case "command", "cmd", "script":
+				if isHookCommandValue(child) {
+					return true
+				}
+			}
+			if containsHookCommand(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if containsHookCommand(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isHookCommandValue(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		fields := strings.Fields(typed)
+		if len(fields) < 2 {
+			return false
+		}
+		first := strings.Trim(fields[0], "\"'")
+		second := strings.Trim(fields[1], "\"'")
+		return filepath.Base(first) == "rgw-ast" && second == "hook"
+	case []any:
+		if len(typed) < 2 {
+			return false
+		}
+		first, firstOK := typed[0].(string)
+		second, secondOK := typed[1].(string)
+		return firstOK && secondOK && filepath.Base(first) == "rgw-ast" && second == "hook"
+	default:
+		return false
+	}
 }
 
 // FormatText renders a compact human report.
