@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/ryangerardwilson/rgw-ast/internal/config"
 	"github.com/ryangerardwilson/rgw-ast/internal/enforce"
@@ -17,16 +19,14 @@ type Request struct {
 	ToolName  string         `json:"tool_name"`
 	ToolInput map[string]any `json:"tool_input"`
 	Command   string         `json:"command"`
-	// Alternate host fields
-	Name string `json:"name"`
+	Name      string         `json:"name"`
 }
 
 // Decision is returned to the host.
 type Decision struct {
-	PermissionDecision       string `json:"permissionDecision"`
-	PermissionDecisionReason string `json:"permissionDecisionReason,omitempty"`
-	// Claude-compatible nested shape
-	HookSpecificOutput *hookSpecific `json:"hookSpecificOutput,omitempty"`
+	PermissionDecision       string        `json:"permissionDecision"`
+	PermissionDecisionReason string        `json:"permissionDecisionReason,omitempty"`
+	HookSpecificOutput       *hookSpecific `json:"hookSpecificOutput,omitempty"`
 }
 
 type hookSpecific struct {
@@ -51,7 +51,6 @@ func Evaluate(req Request, cfg config.Config, cwd, rootOverride string) (Decisio
 	if err != nil {
 		return Decision{}, err
 	}
-	// Always refresh measure for enforcement decisions (hook boundary).
 	m, err := measure.CountCachedOpts(ws, cfg, measure.CountOpts{Refresh: true})
 	if err != nil {
 		return Decision{}, err
@@ -70,26 +69,25 @@ func Evaluate(req Request, cfg config.Config, cwd, rootOverride string) (Decisio
 		cmd = firstString(req.ToolInput, "command", "cmd", "script", "code")
 	}
 
-	if isRGWAst(name, cmd, req.ToolInput) {
+	// Tool name literally rgw-ast (rare MCP wrap)
+	if normalizeTool(name) == "rgwast" || name == "rgw-ast" {
 		return allow(), nil
 	}
+
 	if denyTools[normalizeTool(name)] {
 		return deny("enforced workspace: use rgw-ast hash/patch/create/exec (not " + name + ")"), nil
 	}
+
 	if isShellish(name) {
-		if isRGWAstExec(cmd) {
+		if isRGWAstInvocation(cmd) {
 			return allow(), nil
 		}
 		if mutatesOutsideRGW(cmd) {
 			return deny("enforced workspace: shell mutation denied; use rgw-ast patch or rgw-ast exec -- <generator>"), nil
 		}
+		return allow(), nil
 	}
 	return allow(), nil
-}
-
-func isRGWAstExec(cmd string) bool {
-	low := strings.ToLower(strings.TrimSpace(cmd))
-	return strings.HasPrefix(low, "rgw-ast exec") || strings.Contains(low, "/rgw-ast exec")
 }
 
 // Run reads JSON request from in and writes decision JSON to out.
@@ -106,7 +104,6 @@ func Run(in io.Reader, out io.Writer, cfg config.Config, cwd, rootOverride strin
 	}
 	dec, err := Evaluate(req, cfg, cwd, rootOverride)
 	if err != nil {
-		// fail open for measure errors? prefer fail closed for safety when we can't decide
 		dec = deny(fmt.Sprintf("rgw-ast hook error: %v", err))
 	}
 	enc := json.NewEncoder(out)
@@ -141,7 +138,6 @@ func normalizeTool(name string) string {
 	name = strings.ToLower(name)
 	name = strings.ReplaceAll(name, "-", "")
 	name = strings.ReplaceAll(name, "_", "")
-	// strip server prefixes like mcp__x__Write
 	if i := strings.LastIndex(name, "__"); i >= 0 {
 		name = name[i+2:]
 	}
@@ -159,46 +155,104 @@ func isShellish(name string) bool {
 	}
 }
 
-func isRGWAst(name, cmd string, input map[string]any) bool {
-	if strings.Contains(strings.ToLower(name), "rgw-ast") || strings.Contains(strings.ToLower(name), "rgwast") {
-		return true
+// isRGWAstInvocation is true only when the leading command token is rgw-ast
+// (after optional env assignments). Mentions in comments/args do not count.
+func isRGWAstInvocation(cmd string) bool {
+	toks := leadingTokens(cmd, 8)
+	if len(toks) == 0 {
+		return false
 	}
-	blob := strings.ToLower(cmd)
-	if input != nil {
-		b, _ := json.Marshal(input)
-		blob += " " + strings.ToLower(string(b))
+	base := filepath.Base(toks[0])
+	return base == "rgw-ast"
+}
+
+// leadingTokens extracts up to n shell-ish words, skipping VAR=value prefixes.
+// It does not fully parse shell quoting; it is intentionally conservative.
+func leadingTokens(cmd string, n int) []string {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return nil
 	}
-	return strings.Contains(blob, "rgw-ast")
+	// strip simple outer wrappers like "bash -lc 'rgw-ast ...'" is NOT treated
+	// as rgw-ast; only direct leading binary.
+	var toks []string
+	i := 0
+	for i < len(cmd) && len(toks) < n {
+		for i < len(cmd) && unicode.IsSpace(rune(cmd[i])) {
+			i++
+		}
+		if i >= len(cmd) {
+			break
+		}
+		// stop at shell metacharacters that start a new command
+		if strings.ContainsRune(";|&\n", rune(cmd[i])) {
+			break
+		}
+		if cmd[i] == '#' {
+			break // comment
+		}
+		start := i
+		if cmd[i] == '\'' || cmd[i] == '"' {
+			q := cmd[i]
+			i++
+			for i < len(cmd) && cmd[i] != q {
+				if cmd[i] == '\\' && i+1 < len(cmd) {
+					i += 2
+					continue
+				}
+				i++
+			}
+			if i < len(cmd) {
+				i++
+			}
+			toks = append(toks, cmd[start:i])
+			continue
+		}
+		for i < len(cmd) && !unicode.IsSpace(rune(cmd[i])) && !strings.ContainsRune(";|&\n#", rune(cmd[i])) {
+			i++
+		}
+		tok := cmd[start:i]
+		// skip env assignments at the start of the command
+		if len(toks) == 0 && strings.Contains(tok, "=") && !strings.HasPrefix(tok, "-") && !strings.Contains(tok, "/") {
+			continue
+		}
+		toks = append(toks, tok)
+	}
+	// unquote simple quoted first token for basename check
+	for i, t := range toks {
+		if len(t) >= 2 {
+			if (t[0] == '\'' && t[len(t)-1] == '\'') || (t[0] == '"' && t[len(t)-1] == '"') {
+				toks[i] = t[1 : len(t)-1]
+			}
+		}
+	}
+	return toks
 }
 
 func mutatesOutsideRGW(cmd string) bool {
 	if cmd == "" {
 		return false
 	}
-	c := strings.TrimSpace(cmd)
-	low := strings.ToLower(c)
-	if strings.HasPrefix(low, "rgw-ast") || strings.Contains(low, "/rgw-ast ") {
+	if isRGWAstInvocation(cmd) {
 		return false
 	}
-	// common mutation patterns
+	low := strings.ToLower(cmd)
 	patterns := []string{
 		"sed -i", "perl -i", "ruby -i",
 		"rm ", "rm\t", "unlink ", "truncate ",
-		"mv ", "cp ", "install ",
-		"tee ", ">", ">>",
+		"mv ", "cp ",
+		"tee ",
 		"apply_patch", "git apply", "git checkout --",
 		"chmod ", "chown ",
 	}
 	for _, p := range patterns {
 		if strings.Contains(low, p) {
-			// allow rg redirects that only pipe to rgw-ast? rare
-			if p == ">" || p == ">>" {
-				if strings.Contains(low, "rgw-ast") {
-					continue
-				}
-			}
 			return true
 		}
+	}
+	// redirects are mutations; bare echo/printf without redirect is not
+	if strings.Contains(cmd, ">") || strings.Contains(cmd, ">>") {
+		return true
 	}
 	return false
 }

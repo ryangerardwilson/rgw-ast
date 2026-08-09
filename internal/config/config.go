@@ -63,6 +63,7 @@ func Default() Config {
 			"**/.bash_profile",
 			"**/.profile",
 			"**/*.{toml,yml,yaml,json}",
+			"**/*.qml",
 			"**/.gitignore",
 			"**/*.md",
 		},
@@ -93,13 +94,13 @@ func Default() Config {
 			Dir: "",
 		},
 		Generators: Generators{
+			// Token-prefix rules matched from argv[0] (not substrings of the full line).
 			Allow: []string{
 				"npm exec -- openspec",
 				"npm exec openspec",
 				"npx openspec",
-				"openspec ",
+				"openspec",
 				"go generate",
-				"go run ",
 			},
 		},
 		MaxMapEntries: DefaultMaxMap,
