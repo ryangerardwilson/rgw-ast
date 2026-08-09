@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+
+      - name: Set version env
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "COMMIT=${COMMIT}" >> "$GITHUB_ENV"
+          echo "BUILD_TIME=${BUILD_TIME}" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build release bundle
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-s -w -X github.com/ryangerardwilson/rgw-ast/internal/version.Version=${VERSION} -X github.com/ryangerardwilson/rgw-ast/internal/version.Commit=${COMMIT} -X github.com/ryangerardwilson/rgw-ast/internal/version.BuildTime=${BUILD_TIME}" \
+            -o dist/rgw-ast ./cmd/rgw-ast
+          chmod 755 dist/rgw-ast
+          tar -C dist -czf rgw-ast-linux-x64.tar.gz rgw-ast
+
+      - name: Create release and upload asset
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.TAG }}
+          files: |
+            rgw-ast-linux-x64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -81,11 +81,7 @@ func (r Runner) Run(args []string) int {
 		WriteHelp(r.Out)
 		return ExitOK
 	case "version":
-		if len(rest) != 0 {
-			return r.usage("Use version by itself.")
-		}
-		_, _ = fmt.Fprintln(r.Out, version.Version)
-		return ExitOK
+		err = r.cmdVersion(rest)
 	case "config":
 		err = r.cmdConfig(rest)
 	case "status":
@@ -222,6 +218,26 @@ func (r Runner) workspace() (cfg config.Config, cfgPath, wsRoot string, err erro
 
 func (r Runner) measureRoot(cfg config.Config, wsRoot string) (measure.Result, error) {
 	return measure.CountCachedOpts(wsRoot, cfg, measure.CountOpts{Refresh: r.Refresh})
+}
+
+func (r Runner) cmdVersion(args []string) error {
+	asJSON, rest, err := takeJSONFlag(args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return usageError{"Use: rgw-ast version [--json]"}
+	}
+	if asJSON {
+		return writeJSON(r.Out, map[string]string{
+			"version":    version.Version,
+			"commit":     version.Commit,
+			"build_time": version.BuildTime,
+			"string":     version.String(),
+		})
+	}
+	_, _ = fmt.Fprintln(r.Out, version.String())
+	return nil
 }
 
 func (r Runner) cmdConfig(args []string) error {

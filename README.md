@@ -61,13 +61,33 @@ go run ./cmd/rgw-ast status --json
 
 ## Install
 
-From this checkout:
+Latest release (preferred):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ryangerardwilson/rgw-ast/main/install.sh | bash
+```
+
+From this checkout (stamps version from git tags/commit):
 
 ```bash
 ./install.sh from .
 ```
 
 Binary installs to `~/.local/bin/rgw-ast` (override with `RGW_AST_INSTALL_DIR`).
+
+```bash
+rgw-ast version
+rgw-ast version --json
+```
+
+## Release
+
+```bash
+./push_release_upgrade.sh          # next patch, or first 0.1.0
+./push_release_upgrade.sh 0.2.0    # explicit version
+```
+
+Creates `vX.Y.Z`, uploads `rgw-ast-linux-x64.tar.gz`, installs that version.
 
 ## Config defaults
 
