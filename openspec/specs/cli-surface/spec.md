@@ -7,7 +7,10 @@ TBD - created by archiving change initial-rgw-ast-cli. Update Purpose after arch
 The `rgw-ast` binary SHALL expose a flat verb grammar for agent and human use.
 
 Supported top-level commands SHALL include: `help`, `version`, `config`,
-`status`, `measure`, `map`, `show`, `search`, `hash`, `read`, `patch`.
+`status`, `measure`, `map`, `show`, `search`, `hash`, `read`, `patch`, `hook`.
+
+Global flag `--root <path>` MAY appear before the verb or immediately after it
+for commands that operate on a workspace.
 
 #### Scenario: No-args and help
 - **GIVEN** the binary is installed or run from source

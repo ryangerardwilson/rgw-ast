@@ -13,6 +13,7 @@ import (
 	"github.com/ryangerardwilson/rgw-ast/internal/config"
 	"github.com/ryangerardwilson/rgw-ast/internal/enforce"
 	"github.com/ryangerardwilson/rgw-ast/internal/files"
+	"github.com/ryangerardwilson/rgw-ast/internal/hook"
 	"github.com/ryangerardwilson/rgw-ast/internal/intel"
 	"github.com/ryangerardwilson/rgw-ast/internal/measure"
 	"github.com/ryangerardwilson/rgw-ast/internal/root"
@@ -21,9 +22,9 @@ import (
 
 // Exit codes per spec.
 const (
-	ExitOK      = 0
-	ExitFail    = 1
-	ExitUsage   = 2
+	ExitOK    = 0
+	ExitFail  = 1
+	ExitUsage = 2
 )
 
 type usageError struct{ msg string }
@@ -34,26 +35,44 @@ func (e usageError) Error() string { return e.msg }
 type Runner struct {
 	Out io.Writer
 	Err io.Writer
+	In  io.Reader
 	// Cwd overrides process cwd for tests.
 	Cwd string
 	// ConfigPath overrides global config path for tests.
 	ConfigPath string
 	// LoadConfig if set replaces default load (tests).
 	LoadConfig func() (config.Config, string, error)
+	// RootOverride from --root
+	RootOverride string
 }
 
 func NewRunner(out, errOut io.Writer) Runner {
-	return Runner{Out: out, Err: errOut}
+	return Runner{Out: out, Err: errOut, In: os.Stdin}
 }
 
 func (r Runner) Run(args []string) int {
+	args, rootFlag, err := stripRootFlag(args)
+	if err != nil {
+		return r.usage(err.Error())
+	}
+	if rootFlag != "" {
+		r.RootOverride = rootFlag
+	}
 	if len(args) == 0 {
 		WriteHelp(r.Out)
 		return ExitOK
 	}
 	cmd := args[0]
 	rest := args[1:]
-	var err error
+	// allow --root after verb too
+	rest, rootFlag2, err := stripRootFlag(rest)
+	if err != nil {
+		return r.usage(err.Error())
+	}
+	if rootFlag2 != "" {
+		r.RootOverride = rootFlag2
+	}
+
 	switch cmd {
 	case "help", "-h", "--help":
 		if len(rest) != 0 {
@@ -85,6 +104,8 @@ func (r Runner) Run(args []string) int {
 		err = r.cmdRead(rest)
 	case "patch":
 		err = r.cmdPatch(rest)
+	case "hook":
+		err = r.cmdHook(rest)
 	default:
 		return r.usage(fmt.Sprintf("unknown command %q; see rgw-ast help", cmd))
 	}
@@ -97,12 +118,39 @@ func (r Runner) Run(args []string) int {
 		return ExitUsage
 	}
 	_, _ = fmt.Fprintln(r.Err, "Error:", err.Error())
+	// hook errors still try to emit deny JSON via cmdHook; runtime errors exit 1
 	return ExitFail
 }
 
 func (r Runner) usage(msg string) int {
 	_, _ = fmt.Fprintln(r.Err, "Error:", msg)
 	return ExitUsage
+}
+
+func stripRootFlag(args []string) (rest []string, root string, err error) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--root" {
+			if i+1 >= len(args) {
+				return nil, "", fmt.Errorf("--root requires a path")
+			}
+			if root != "" {
+				return nil, "", fmt.Errorf("duplicate --root")
+			}
+			root = args[i+1]
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "--root=") {
+			if root != "" {
+				return nil, "", fmt.Errorf("duplicate --root")
+			}
+			root = strings.TrimPrefix(a, "--root=")
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return rest, root, nil
 }
 
 func (r Runner) load() (config.Config, string, error) {
@@ -124,6 +172,22 @@ func (r Runner) workspace() (cfg config.Config, cfgPath, wsRoot string, err erro
 	if err != nil {
 		return
 	}
+	if r.RootOverride != "" {
+		wsRoot, err = filepath.Abs(r.RootOverride)
+		if err != nil {
+			return
+		}
+		st, statErr := os.Stat(wsRoot)
+		if statErr != nil {
+			err = statErr
+			return
+		}
+		if !st.IsDir() {
+			err = fmt.Errorf("--root is not a directory: %s", wsRoot)
+			return
+		}
+		return
+	}
 	cwd := r.Cwd
 	if cwd == "" {
 		cwd, err = os.Getwd()
@@ -133,6 +197,10 @@ func (r Runner) workspace() (cfg config.Config, cfgPath, wsRoot string, err erro
 	}
 	wsRoot, err = root.Resolve(cwd)
 	return
+}
+
+func (r Runner) measureRoot(cfg config.Config, wsRoot string) (measure.Result, error) {
+	return measure.CountCached(wsRoot, cfg)
 }
 
 func (r Runner) cmdConfig(args []string) error {
@@ -173,7 +241,7 @@ func (r Runner) cmdStatus(args []string) error {
 	if err != nil {
 		return err
 	}
-	m, err := measure.Count(wsRoot, cfg)
+	m, err := r.measureRoot(cfg, wsRoot)
 	if err != nil {
 		return err
 	}
@@ -212,7 +280,7 @@ func (r Runner) cmdMeasure(args []string) error {
 	if err != nil {
 		return err
 	}
-	m, err := measure.Count(wsRoot, cfg)
+	m, err := r.measureRoot(cfg, wsRoot)
 	if err != nil {
 		return err
 	}
@@ -324,7 +392,7 @@ func (r Runner) cmdRead(args []string) error {
 	if err != nil {
 		return err
 	}
-	m, err := measure.Count(wsRoot, cfg)
+	m, err := r.measureRoot(cfg, wsRoot)
 	if err != nil {
 		return err
 	}
@@ -333,12 +401,16 @@ func (r Runner) cmdRead(args []string) error {
 	if err != nil {
 		return err
 	}
-	rel, _ := filepath.Rel(wsRoot, abs)
-	rel = filepath.ToSlash(rel)
 
 	if linesSpec == "" {
-		if d.Enforced && cfg.Enforcement.DenyWholeFileRead && measure.PathMatches(cfg, rel) {
-			return fmt.Errorf("whole-file read denied while enforced; use --lines START-END or map/show/search")
+		if d.Enforced && cfg.Enforcement.DenyWholeFileRead {
+			bin, err := files.IsBinary(abs)
+			if err != nil {
+				return err
+			}
+			if !bin {
+				return fmt.Errorf("whole-file read denied while enforced; use --lines START-END or map/show/search")
+			}
 		}
 		data, err := os.ReadFile(abs)
 		if err != nil {
@@ -378,7 +450,7 @@ func (r Runner) cmdPatch(args []string) error {
 	if err != nil {
 		return err
 	}
-	m, err := measure.Count(wsRoot, cfg)
+	m, err := r.measureRoot(cfg, wsRoot)
 	if err != nil {
 		return err
 	}
@@ -399,6 +471,37 @@ func (r Runner) cmdPatch(args []string) error {
 	}
 	rel, _ := filepath.Rel(wsRoot, abs)
 	_, _ = fmt.Fprintf(r.Out, "ok  %s  %s\n", newHash, filepath.ToSlash(rel))
+	return nil
+}
+
+func (r Runner) cmdHook(args []string) error {
+	if len(args) != 0 {
+		return usageError{"Use: rgw-ast hook"}
+	}
+	cfg, _, err := r.load()
+	if err != nil {
+		// still emit deny
+		_ = json.NewEncoder(r.Out).Encode(map[string]any{
+			"permissionDecision":       "deny",
+			"permissionDecisionReason": err.Error(),
+		})
+		return nil
+	}
+	cwd := r.Cwd
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	in := r.In
+	if in == nil {
+		in = os.Stdin
+	}
+	// Hook always succeeds as process exit for host delivery; decision is JSON.
+	if err := hook.Run(in, r.Out, cfg, cwd, r.RootOverride); err != nil {
+		_ = json.NewEncoder(r.Out).Encode(map[string]any{
+			"permissionDecision":       "deny",
+			"permissionDecisionReason": err.Error(),
+		})
+	}
 	return nil
 }
 
@@ -509,6 +612,5 @@ func parsePatchArgs(args []string) (path, hash, old, new string, err error) {
 	if old == "" {
 		return "", "", "", "", usageError{"--old is required"}
 	}
-	// --new may be empty (delete text)
 	return path, hash, old, new, nil
 }

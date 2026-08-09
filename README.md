@@ -32,15 +32,23 @@ Active work lives under `openspec/changes/`.
 rgw-ast help
 rgw-ast version
 rgw-ast config                 # print global config path (creates defaults)
-rgw-ast status [--json]
-rgw-ast measure [--json]
-rgw-ast map [path]
-rgw-ast show <symbol|path:symbol>
-rgw-ast search <query>
-rgw-ast hash <file> [...]
-rgw-ast read <file> --lines START-END
-rgw-ast patch <file> --expect-hash <sha256> --old <text> --new <text>
+rgw-ast [--root <path>] status [--json]
+rgw-ast [--root <path>] measure [--json]
+rgw-ast [--root <path>] map [path]
+rgw-ast [--root <path>] show <symbol|path:symbol>
+rgw-ast [--root <path>] search <query>
+rgw-ast [--root <path>] hash <file> [...]
+rgw-ast [--root <path>] read <file> --lines START-END
+rgw-ast [--root <path>] patch <file> --expect-hash <sha256> --old <text> --new <text>
+rgw-ast [--root <path>] hook   # PreToolUse JSON on stdin → allow/deny JSON
 ```
+
+LOC results are cached under the XDG cache (~60s fingerprint). When enforced,
+whole-file `read` is denied for **any** non-binary text (not only include globs).
+Search snippets are truncated to 120 characters.
+
+Agent hosts: pipe PreToolUse events to `rgw-ast hook`. Home workspace
+`AGENTS.md` requires agents to honor enforced mode.
 
 ## Local verification
 

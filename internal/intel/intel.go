@@ -235,7 +235,7 @@ func Search(root, query string, cfg config.Config) ([]Hit, bool, error) {
 		}
 		for i, line := range strings.Split(string(data), "\n") {
 			if strings.Contains(line, query) {
-				hits = append(hits, Hit{Path: rel, Line: i + 1, Content: strings.TrimRight(line, "\r")})
+				hits = append(hits, Hit{Path: rel, Line: i + 1, Content: truncateSnippet(strings.TrimRight(line, "\r"), 120)})
 				if len(hits) >= max {
 					truncated = true
 					return filepath.SkipAll
@@ -420,4 +420,15 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func truncateSnippet(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }

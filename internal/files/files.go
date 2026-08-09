@@ -36,6 +36,26 @@ func ResolvePath(root, path string) (string, error) {
 	return abs, nil
 }
 
+// IsBinary reports whether the file looks binary (contains a NUL in the first 512KiB).
+func IsBinary(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	buf := make([]byte, 512*1024)
+	n, err := f.Read(buf)
+	if err != nil && err != io.EOF {
+		return false, err
+	}
+	for i := 0; i < n; i++ {
+		if buf[i] == 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // HashFile returns the SHA-256 hex digest of a file.
 func HashFile(path string) (string, error) {
 	f, err := os.Open(path)

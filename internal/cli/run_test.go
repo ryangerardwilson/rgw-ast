@@ -64,12 +64,20 @@ func TestHelpVersionStatus(t *testing.T) {
 		t.Fatal("expected enforced")
 	}
 
-	// whole-file read denied
+	// whole-file read denied for source
 	out.Reset()
 	errB.Reset()
 	code := r.Run([]string{"read", "a.go"})
 	if code != ExitFail {
 		t.Fatalf("read code %d out=%q err=%q", code, out.String(), errB.String())
+	}
+	// whole-file read denied for json too when enforced
+	mustWrite(t, filepath.Join(ws, "package.json"), `{"name":"x"}`+"\n")
+	out.Reset()
+	errB.Reset()
+	code = r.Run([]string{"read", "package.json"})
+	if code != ExitFail {
+		t.Fatalf("json read code %d out=%q err=%q", code, out.String(), errB.String())
 	}
 
 	// bounded read ok
@@ -122,6 +130,39 @@ func TestUnknownCommand(t *testing.T) {
 	r := NewRunner(&out, &errB)
 	if code := r.Run([]string{"nope"}); code != ExitUsage {
 		t.Fatal(code)
+	}
+}
+
+func TestRootFlagAndHook(t *testing.T) {
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "x.go"), "package x\n")
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "config.toml")
+	cfg := config.Default()
+	cfg.ThresholdLOC = 1
+	cfg.Enforcement.Mode = "auto"
+	cfg.Cache.Dir = t.TempDir()
+	if err := config.Write(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out, errB bytes.Buffer
+	r := NewRunner(&out, &errB)
+	r.ConfigPath = cfgPath
+	r.Cwd = t.TempDir() // different cwd; --root points at ws
+	if code := r.Run([]string{"--root", ws, "status", "--json"}); code != 0 {
+		t.Fatal(code, errB.String())
+	}
+	if !strings.Contains(out.String(), `"enforced":true`) {
+		t.Fatal(out.String())
+	}
+	out.Reset()
+	errB.Reset()
+	r.In = strings.NewReader(`{"tool_name":"Edit","tool_input":{}}`)
+	if code := r.Run([]string{"--root", ws, "hook"}); code != 0 {
+		t.Fatal(code, errB.String())
+	}
+	if !strings.Contains(out.String(), `"permissionDecision":"deny"`) {
+		t.Fatal(out.String())
 	}
 }
 
