@@ -8,9 +8,11 @@ Usage:
   rgw-ast [--root <path>] <command> [args]
 
 Commands:
-  help | version | config
+  help | version [--json] | config
   status [--json] [--refresh]
   measure [--json] [--refresh]
+  doctor [--json] [--refresh]
+  agents-block
   map [path]
   show <symbol|path:symbol>
   search [--path <dir>] [--glob <pat>] <query>
@@ -21,13 +23,16 @@ Commands:
   create <file> --expect-absent (--from-file <f>|--stdin) [--parents]
   append <file> --expect-hash <sha> (--from-file <f>|--stdin)
   patch <file> --expect-hash <sha> (--old/--new | --old-file/--new-file | --ops-file <json>)
+  exec [--json] -- <generator command...>
   hook
 
 Policy: ~/.config/rgw-ast/config.toml only.
-Measure honors .gitignore and stops at nested git repos. LOC cached ~60s.
+Measure honors .gitignore, stops at nested git repos, fingerprints dirty trees.
+LOC cached ~60s; mutations/hook refresh enforcement. generators.allow lists exec.
 
-When enforced (auto, LOC >= threshold):
-  map/show/search + read --lines; create/append/patch for mutation.
+When enforced:
+  map/show/search + read --lines; create/append/patch for edits;
+  generators only via: rgw-ast exec -- <cmd>
   Hosts: pipe PreToolUse to rgw-ast hook.
 
 Exit: 0 ok, 1 error, 2 usage (hook always 0 after decision JSON)

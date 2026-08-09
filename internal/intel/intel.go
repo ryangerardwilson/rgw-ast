@@ -1,6 +1,7 @@
 package intel
 
 import (
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -393,6 +394,7 @@ func pathIncluded(cfg config.Config, rel string) bool {
 
 func mapFile(root, abs, rel string) ([]Entry, error) {
 	base := filepath.Base(rel)
+	low := strings.ToLower(rel)
 	if strings.HasSuffix(rel, ".go") {
 		return mapGo(abs, rel)
 	}
@@ -400,7 +402,188 @@ func mapFile(root, abs, rel string) ([]Entry, error) {
 		base == ".bashrc" || base == ".bash_profile" || base == ".profile" {
 		return mapBash(abs, rel)
 	}
+	if strings.HasSuffix(low, ".md") {
+		return mapMarkdown(abs, rel)
+	}
+	if strings.HasSuffix(low, ".json") {
+		return mapJSON(abs, rel)
+	}
+	if strings.HasSuffix(low, ".toml") {
+		return mapTOML(abs, rel)
+	}
+	if strings.HasSuffix(low, ".yml") || strings.HasSuffix(low, ".yaml") {
+		return mapYAML(abs, rel)
+	}
+	if strings.HasSuffix(low, ".qml") {
+		return mapQML(abs, rel)
+	}
 	return mapHeuristic(abs, rel)
+}
+
+var (
+	reMDHeading = regexp.MustCompile(`(?m)^(#{1,6})[ \t]+(.+?)\s*$`)
+	reMDReq     = regexp.MustCompile(`(?m)^###[ \t]+Requirement:[ \t]+(.+)$`)
+	reMDScen    = regexp.MustCompile(`(?m)^####[ \t]+Scenario:[ \t]+(.+)$`)
+	reTOMLSec   = regexp.MustCompile(`(?m)^\[([^\]]+)\]\s*$`)
+	reYAMLKey   = regexp.MustCompile(`(?m)^([A-Za-z0-9_.-]+):\s`)
+	reQMLType   = regexp.MustCompile(`(?m)^[ \t]*([A-Z][A-Za-z0-9_]*)\s*\{`)
+	reQMLFunc   = regexp.MustCompile(`(?m)^[ \t]*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	reQMLProp   = regexp.MustCompile(`(?m)^[ \t]*property\s+\w+\s+([A-Za-z_][A-Za-z0-9_]*)`)
+)
+
+func mapMarkdown(abs, rel string) ([]Entry, error) {
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	text := string(data)
+	var entries []Entry
+	for _, m := range reMDReq.FindAllStringSubmatchIndex(text, -1) {
+		name := text[m[2]:m[3]]
+		line := 1 + strings.Count(text[:m[0]], "\n")
+		entries = append(entries, Entry{Path: rel, Kind: "requirement", Name: name, Line: line, End: line + 5, Label: "requirement " + name})
+	}
+	for _, m := range reMDScen.FindAllStringSubmatchIndex(text, -1) {
+		name := text[m[2]:m[3]]
+		line := 1 + strings.Count(text[:m[0]], "\n")
+		entries = append(entries, Entry{Path: rel, Kind: "scenario", Name: name, Line: line, End: line + 3, Label: "scenario " + name})
+	}
+	if len(entries) == 0 {
+		for _, m := range reMDHeading.FindAllStringSubmatchIndex(text, -1) {
+			level := m[3] - m[2]
+			name := strings.TrimSpace(text[m[4]:m[5]])
+			line := 1 + strings.Count(text[:m[0]], "\n")
+			entries = append(entries, Entry{Path: rel, Kind: "heading", Name: name, Line: line, End: line, Label: fmt.Sprintf("h%d %s", level, name)})
+			if len(entries) >= 80 {
+				break
+			}
+		}
+	}
+	if len(entries) == 0 {
+		return mapHeuristic(abs, rel)
+	}
+	return entries, nil
+}
+
+func mapJSON(abs, rel string) ([]Entry, error) {
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return mapHeuristic(abs, rel)
+	}
+	var entries []Entry
+	var walk func(prefix string, node any, depth int)
+	walk = func(prefix string, node any, depth int) {
+		if depth > 3 || len(entries) >= 100 {
+			return
+		}
+		switch t := node.(type) {
+		case map[string]any:
+			for k, child := range t {
+				path := k
+				if prefix != "" {
+					path = prefix + "." + k
+				}
+				entries = append(entries, Entry{Path: rel, Kind: "key", Name: path, Line: 1, End: 1, Label: "key " + path})
+				walk(path, child, depth+1)
+			}
+		case []any:
+			if prefix != "" {
+				entries = append(entries, Entry{Path: rel, Kind: "array", Name: prefix, Line: 1, End: 1, Label: "array " + prefix})
+			}
+		}
+	}
+	walk("", v, 0)
+	if len(entries) == 0 {
+		return mapHeuristic(abs, rel)
+	}
+	return entries, nil
+}
+
+func mapTOML(abs, rel string) ([]Entry, error) {
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	text := string(data)
+	var entries []Entry
+	for _, m := range reTOMLSec.FindAllStringSubmatchIndex(text, -1) {
+		name := text[m[2]:m[3]]
+		line := 1 + strings.Count(text[:m[0]], "\n")
+		entries = append(entries, Entry{Path: rel, Kind: "section", Name: name, Line: line, End: line + 10, Label: "section " + name})
+	}
+	// top-level keys
+	for i, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "[") {
+			continue
+		}
+		if idx := strings.IndexByte(line, '='); idx > 0 {
+			key := strings.TrimSpace(line[:idx])
+			if key != "" && !strings.Contains(key, " ") {
+				entries = append(entries, Entry{Path: rel, Kind: "key", Name: key, Line: i + 1, End: i + 1, Label: "key " + key})
+			}
+		}
+	}
+	if len(entries) == 0 {
+		return mapHeuristic(abs, rel)
+	}
+	return entries, nil
+}
+
+func mapYAML(abs, rel string) ([]Entry, error) {
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	text := string(data)
+	var entries []Entry
+	for i, line := range strings.Split(text, "\n") {
+		if m := reYAMLKey.FindStringSubmatch(line); len(m) == 2 && !strings.HasPrefix(strings.TrimLeft(line, " \t"), "-") {
+			// only indent 0-2 for top-ish keys
+			indent := len(line) - len(strings.TrimLeft(line, " \t"))
+			if indent <= 2 {
+				entries = append(entries, Entry{Path: rel, Kind: "key", Name: m[1], Line: i + 1, End: i + 1, Label: "key " + m[1]})
+			}
+		}
+		if len(entries) >= 80 {
+			break
+		}
+	}
+	if len(entries) == 0 {
+		return mapHeuristic(abs, rel)
+	}
+	return entries, nil
+}
+
+func mapQML(abs, rel string) ([]Entry, error) {
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	text := string(data)
+	var entries []Entry
+	for _, m := range reQMLType.FindAllStringSubmatchIndex(text, -1) {
+		name := text[m[2]:m[3]]
+		line := 1 + strings.Count(text[:m[0]], "\n")
+		entries = append(entries, Entry{Path: rel, Kind: "type", Name: name, Line: line, End: line + 15, Label: "type " + name})
+	}
+	for _, m := range reQMLFunc.FindAllStringSubmatchIndex(text, -1) {
+		name := text[m[2]:m[3]]
+		line := 1 + strings.Count(text[:m[0]], "\n")
+		entries = append(entries, Entry{Path: rel, Kind: "function", Name: name, Line: line, End: line + 10, Label: "function " + name})
+	}
+	for _, m := range reQMLProp.FindAllStringSubmatchIndex(text, -1) {
+		name := text[m[2]:m[3]]
+		line := 1 + strings.Count(text[:m[0]], "\n")
+		entries = append(entries, Entry{Path: rel, Kind: "property", Name: name, Line: line, End: line, Label: "property " + name})
+	}
+	if len(entries) == 0 {
+		return mapHeuristic(abs, rel)
+	}
+	return entries, nil
 }
 
 var (

@@ -116,7 +116,23 @@ func fingerprint(root string, cfg config.Config) (string, error) {
 			_, _ = h.Write(data)
 		}
 	}
+	// Working-tree dirty fingerprint: nested file edits change porcelain
+	// without touching root mtime or HEAD.
+	if dirty := gitDirtyFingerprint(root); len(dirty) > 0 {
+		_, _ = h.Write(dirty)
+	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func gitDirtyFingerprint(root string) []byte {
+	if out := runGit(root, "status", "--porcelain=v1", "-uall"); len(out) > 0 {
+		return out
+	}
+	// empty porcelain still distinguishes clean tree — include marker + mtime sample
+	if runGit(root, "rev-parse", "--is-inside-work-tree") != nil {
+		return append([]byte("clean\n"), sampleNestedMtimes(root)...)
+	}
+	return sampleNestedMtimes(root)
 }
 
 func cacheFilePath(cfg config.Config, root string) (string, error) {

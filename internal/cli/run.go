@@ -10,8 +10,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ryangerardwilson/rgw-ast/internal/agents"
 	"github.com/ryangerardwilson/rgw-ast/internal/config"
+	"github.com/ryangerardwilson/rgw-ast/internal/doctor"
 	"github.com/ryangerardwilson/rgw-ast/internal/enforce"
+	"github.com/ryangerardwilson/rgw-ast/internal/execgen"
 	"github.com/ryangerardwilson/rgw-ast/internal/files"
 	"github.com/ryangerardwilson/rgw-ast/internal/hook"
 	"github.com/ryangerardwilson/rgw-ast/internal/intel"
@@ -106,6 +109,12 @@ func (r Runner) Run(args []string) int {
 		err = r.cmdAppend(rest)
 	case "patch":
 		err = r.cmdPatch(rest)
+	case "exec":
+		err = r.cmdExec(rest)
+	case "doctor":
+		err = r.cmdDoctor(rest)
+	case "agents-block":
+		err = r.cmdAgentsBlock(rest)
 	case "hook":
 		err = r.cmdHook(rest)
 	default:
@@ -218,6 +227,11 @@ func (r Runner) workspace() (cfg config.Config, cfgPath, wsRoot string, err erro
 
 func (r Runner) measureRoot(cfg config.Config, wsRoot string) (measure.Result, error) {
 	return measure.CountCachedOpts(wsRoot, cfg, measure.CountOpts{Refresh: r.Refresh})
+}
+
+// measureFresh forces a recount for mutation/hook-adjacent enforcement.
+func (r Runner) measureFresh(cfg config.Config, wsRoot string) (measure.Result, error) {
+	return measure.CountCachedOpts(wsRoot, cfg, measure.CountOpts{Refresh: true})
 }
 
 func (r Runner) cmdVersion(args []string) error {
@@ -501,7 +515,7 @@ func (r Runner) cmdRead(args []string) error {
 	if err != nil {
 		return err
 	}
-	m, err := r.measureRoot(cfg, wsRoot)
+	m, err := r.measureFresh(cfg, wsRoot)
 	if err != nil {
 		return err
 	}
@@ -628,8 +642,8 @@ func (r Runner) cmdPatch(args []string) error {
 	if err != nil {
 		return err
 	}
-	// recheck enforcement with cache (mutations should see current policy)
-	m, err := r.measureRoot(cfg, wsRoot)
+	// recheck enforcement with fresh measure (mutations must not use stale LOC)
+	m, err := r.measureFresh(cfg, wsRoot)
 	if err != nil {
 		return err
 	}
@@ -702,6 +716,108 @@ func (r Runner) cmdHook(args []string) error {
 		_ = json.NewEncoder(r.Out).Encode(map[string]any{
 			"permissionDecision": "deny", "permissionDecisionReason": err.Error(),
 		})
+	}
+	return nil
+}
+
+func (r Runner) cmdExec(args []string) error {
+	// rgw-ast exec [--json] -- <command...>
+	asJSON := false
+	var cmdArgs []string
+	seenSep := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			seenSep = true
+			cmdArgs = args[i+1:]
+			break
+		}
+		if a == "--json" {
+			asJSON = true
+			continue
+		}
+		return usageError{"Use: rgw-ast exec [--json] -- <command...>"}
+	}
+	if !seenSep || len(cmdArgs) == 0 {
+		return usageError{"Use: rgw-ast exec [--json] -- <command...>"}
+	}
+	cfg, _, wsRoot, err := r.workspace()
+	if err != nil {
+		return err
+	}
+	m, err := r.measureFresh(cfg, wsRoot)
+	if err != nil {
+		return err
+	}
+	d := enforce.Decide(cfg, m.LOC)
+	rep, err := execgen.Run(wsRoot, cfg, cmdArgs, d.Enforced)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		if err := writeJSON(r.Out, rep); err != nil {
+			return err
+		}
+	} else {
+		_, _ = fmt.Fprintf(r.Out, "exit_code: %d\nallowed_by: %s\nchanges: %d\n", rep.ExitCode, rep.AllowedBy, len(rep.Changes))
+		for _, c := range rep.Changes {
+			if c.Hash != "" {
+				_, _ = fmt.Fprintf(r.Out, "  %s  %s  %s\n", c.Status, c.Hash, c.Path)
+			} else {
+				_, _ = fmt.Fprintf(r.Out, "  %s  %s\n", c.Status, c.Path)
+			}
+		}
+	}
+	if rep.ExitCode != 0 {
+		return fmt.Errorf("generator exit %d", rep.ExitCode)
+	}
+	return nil
+}
+
+func (r Runner) cmdDoctor(args []string) error {
+	asJSON, rest, err := takeJSONFlag(args)
+	if err != nil {
+		return err
+	}
+	rest, refresh, err := stripBoolFlag(rest, "--refresh")
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return usageError{"Use: rgw-ast doctor [--json] [--refresh]"}
+	}
+	cfg, cfgPath, err := r.load()
+	if err != nil {
+		return err
+	}
+	cwd := r.Cwd
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	rep := doctor.Run(cfg, cfgPath, cwd, r.RootOverride, refresh || r.Refresh)
+	if asJSON {
+		b, err := doctor.FormatJSON(rep)
+		if err != nil {
+			return err
+		}
+		_, _ = r.Out.Write(b)
+		_, _ = fmt.Fprintln(r.Out)
+		return nil
+	}
+	_, _ = io.WriteString(r.Out, doctor.FormatText(rep))
+	if !rep.OK {
+		return fmt.Errorf("doctor reported errors")
+	}
+	return nil
+}
+
+func (r Runner) cmdAgentsBlock(args []string) error {
+	if len(args) != 0 {
+		return usageError{"Use: rgw-ast agents-block"}
+	}
+	_, _ = io.WriteString(r.Out, agents.Block)
+	if !strings.HasSuffix(agents.Block, "\n") {
+		_, _ = fmt.Fprintln(r.Out)
 	}
 	return nil
 }

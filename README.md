@@ -15,53 +15,64 @@ patches are rejected for included source files.
 
 ## Spec-driven development
 
-This repo uses [OpenSpec](https://github.com/Fission-AI/OpenSpec):
-
-```bash
-npm exec -- openspec list --specs
-npm exec -- openspec list
-npm exec -- openspec validate initial-rgw-ast-cli --strict --no-interactive
-```
-
-Accepted capabilities live under `openspec/specs/` after a change is archived.
-Active work lives under `openspec/changes/`.
+This repo uses [OpenSpec](https://github.com/Fission-AI/OpenSpec). Accepted
+capabilities live under `openspec/specs/`.
 
 ## Commands
 
 ```bash
 rgw-ast help
-rgw-ast version
-rgw-ast config                 # print global config path (creates defaults)
-rgw-ast [--root <path>] status [--json]
-rgw-ast [--root <path>] measure [--json]
+rgw-ast version [--json]
+rgw-ast config
+
+rgw-ast [--root <path>] status [--json] [--refresh]
+rgw-ast [--root <path>] measure [--json] [--refresh]
+rgw-ast [--root <path>] doctor [--json] [--refresh]
+rgw-ast agents-block
+
 rgw-ast [--root <path>] map [path]
 rgw-ast [--root <path>] show <symbol|path:symbol>
-rgw-ast [--root <path>] search <query>
+rgw-ast [--root <path>] search [--path <dir>] [--glob <pat>] <query>
+rgw-ast search --help
+rgw-ast [--root <path>] explain <path>
+
 rgw-ast [--root <path>] hash <file> [...]
-rgw-ast [--root <path>] read <file> --lines START-END
-rgw-ast [--root <path>] patch <file> --expect-hash <sha256> --old <text> --new <text>
-rgw-ast [--root <path>] hook   # PreToolUse JSON on stdin → allow/deny JSON
+rgw-ast [--root <path>] read <file> --lines START-END [--number] [--strict-lines]
+rgw-ast [--root <path>] create <file> --expect-absent (--from-file f|--stdin) [--parents]
+rgw-ast [--root <path>] append <file> --expect-hash <sha> (--from-file f|--stdin)
+rgw-ast [--root <path>] patch <file> --expect-hash <sha> \
+  (--old/--new | --old-file/--new-file | --ops-file ops.json)
+
+rgw-ast [--root <path>] exec [--json] -- <generator command...>
+rgw-ast [--root <path>] hook
 ```
 
-LOC results are cached under the XDG cache (~60s fingerprint). When enforced,
-whole-file `read` is denied for **any** non-binary text (not only include globs).
-Search snippets are truncated to 120 characters.
+### Behavior notes
 
-Agent hosts: pipe PreToolUse events to `rgw-ast hook`. Home workspace
-`AGENTS.md` requires agents to honor enforced mode.
+- Measure honors `.gitignore`, stops at nested git repos, and fingerprints
+  dirty working trees (`git status --porcelain`) so nested edits invalidate cache.
+- Mutations and the PreToolUse hook recompute enforcement with a fresh measure.
+- When enforced, whole-file `read` is denied for any non-binary text.
+- Oversized `--lines` ranges clamp to `max_read_lines` and print `next_start`
+  (use `--strict-lines` to fail hard). Prefer `--number` for citations.
+- Search snippets truncate to 120 characters; use `--path` / `--glob` to scope.
+- Map understands Go, Bash, Markdown (headings/OpenSpec requirements), JSON keys,
+  TOML sections, YAML keys, and light QML structure.
+- Trusted generators (OpenSpec, etc.) must run as `rgw-ast exec -- ...` using
+  patterns from global `generators.allow`.
 
 ## Local verification
 
 ```bash
 go test ./...
 go run ./cmd/rgw-ast help
-go run ./cmd/rgw-ast version
-go run ./cmd/rgw-ast status --json
+go run ./cmd/rgw-ast version --json
+go run ./cmd/rgw-ast doctor --json
 ```
 
 ## Install
 
-Latest release (preferred):
+Latest release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ryangerardwilson/rgw-ast/main/install.sh | bash
@@ -73,8 +84,6 @@ From this checkout (stamps version from git tags/commit):
 ./install.sh from .
 ```
 
-Binary installs to `~/.local/bin/rgw-ast` (override with `RGW_AST_INSTALL_DIR`).
-
 ```bash
 rgw-ast version
 rgw-ast version --json
@@ -83,24 +92,6 @@ rgw-ast version --json
 ## Release
 
 ```bash
-./push_release_upgrade.sh          # next patch, or first 0.1.0
+./push_release_upgrade.sh          # next patch
 ./push_release_upgrade.sh 0.2.0    # explicit version
 ```
-
-Creates `vX.Y.Z`, uploads `rgw-ast-linux-x64.tar.gz`, installs that version.
-
-## Config defaults
-
-On first use, `rgw-ast` writes a default global config with:
-
-- `threshold_loc = 5000`
-- `enforcement.mode = "auto"`
-- include globs for common source languages
-- excludes for `node_modules`, `.git`, `dist`, `build`, `.next`, `vendor`, `target`
-
-Edit the single global file; do not add project-local policy files.
-
-## Non-goals (v1)
-
-MCP server, Codex/Claude hook installers, full multi-language AST rewrites,
-and per-repo config overrides are out of scope for the initial release.

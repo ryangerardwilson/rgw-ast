@@ -51,7 +51,8 @@ func Evaluate(req Request, cfg config.Config, cwd, rootOverride string) (Decisio
 	if err != nil {
 		return Decision{}, err
 	}
-	m, err := measure.CountCached(ws, cfg)
+	// Always refresh measure for enforcement decisions (hook boundary).
+	m, err := measure.CountCachedOpts(ws, cfg, measure.CountOpts{Refresh: true})
 	if err != nil {
 		return Decision{}, err
 	}
@@ -73,12 +74,22 @@ func Evaluate(req Request, cfg config.Config, cwd, rootOverride string) (Decisio
 		return allow(), nil
 	}
 	if denyTools[normalizeTool(name)] {
-		return deny("enforced workspace: use rgw-ast hash/patch (not " + name + ")"), nil
+		return deny("enforced workspace: use rgw-ast hash/patch/create/exec (not " + name + ")"), nil
 	}
-	if isShellish(name) && mutatesOutsideRGW(cmd) {
-		return deny("enforced workspace: shell mutation denied; use rgw-ast patch"), nil
+	if isShellish(name) {
+		if isRGWAstExec(cmd) {
+			return allow(), nil
+		}
+		if mutatesOutsideRGW(cmd) {
+			return deny("enforced workspace: shell mutation denied; use rgw-ast patch or rgw-ast exec -- <generator>"), nil
+		}
 	}
 	return allow(), nil
+}
+
+func isRGWAstExec(cmd string) bool {
+	low := strings.ToLower(strings.TrimSpace(cmd))
+	return strings.HasPrefix(low, "rgw-ast exec") || strings.Contains(low, "/rgw-ast exec")
 }
 
 // Run reads JSON request from in and writes decision JSON to out.

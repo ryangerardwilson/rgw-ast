@@ -19,13 +19,21 @@ const (
 
 // Config is the sole global policy for rgw-ast.
 type Config struct {
-	Version       int          `toml:"version"`
-	ThresholdLOC  int          `toml:"threshold_loc"`
-	Include       []string     `toml:"include"`
-	Exclude       []string     `toml:"exclude"`
-	Enforcement   Enforcement  `toml:"enforcement"`
-	Cache         Cache        `toml:"cache"`
-	MaxMapEntries int          `toml:"max_map_entries"`
+	Version       int         `toml:"version"`
+	ThresholdLOC  int         `toml:"threshold_loc"`
+	Include       []string    `toml:"include"`
+	Exclude       []string    `toml:"exclude"`
+	Enforcement   Enforcement `toml:"enforcement"`
+	Cache         Cache       `toml:"cache"`
+	Generators    Generators  `toml:"generators"`
+	MaxMapEntries int         `toml:"max_map_entries"`
+}
+
+// Generators configures trusted external scaffolding tools.
+type Generators struct {
+	// Allow is a list of prefix or glob-like command patterns that may run
+	// under `rgw-ast exec` (e.g. "npm exec -- openspec", "openspec ").
+	Allow []string `toml:"allow"`
 }
 
 type Enforcement struct {
@@ -83,6 +91,16 @@ func Default() Config {
 		},
 		Cache: Cache{
 			Dir: "",
+		},
+		Generators: Generators{
+			Allow: []string{
+				"npm exec -- openspec",
+				"npm exec openspec",
+				"npx openspec",
+				"openspec ",
+				"go generate",
+				"go run ",
+			},
 		},
 		MaxMapEntries: DefaultMaxMap,
 	}
@@ -215,6 +233,10 @@ func normalize(cfg *Config) {
 	if len(cfg.Exclude) == 0 {
 		d := Default()
 		cfg.Exclude = d.Exclude
+	}
+	if len(cfg.Generators.Allow) == 0 {
+		d := Default()
+		cfg.Generators.Allow = d.Generators.Allow
 	}
 }
 
