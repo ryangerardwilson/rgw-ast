@@ -12,9 +12,13 @@ import (
 
 // Result is a LOC measure for one workspace root.
 type Result struct {
-	Root      string
-	LOC       int
-	FileCount int
+	Root                string
+	LOC                 int
+	FileCount           int
+	NestedReposSkipped   int
+	GitIgnoreActive     bool
+	CacheHit            bool
+	CacheAgeMs          int64
 }
 
 // PathMatches reports whether rel (slash-separated, relative to root) is
@@ -34,16 +38,18 @@ func Count(root string, cfg config.Config) (Result, error) {
 	res := Result{Root: root}
 	include := compileGlobs(cfg.Include)
 	exclude := compileGlobs(cfg.Exclude)
+	gi := loadGitIgnore(root)
+	res.GitIgnoreActive = gi != nil
+	rootAbs, _ := filepath.Abs(root)
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			// Skip unreadable nodes.
 			if d != nil && d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		rel, relErr := filepath.Rel(root, path)
+		rel, relErr := filepath.Rel(rootAbs, path)
 		if relErr != nil {
 			return nil
 		}
@@ -53,12 +59,18 @@ func Count(root string, cfg config.Config) (Result, error) {
 		}
 		if d.IsDir() {
 			base := d.Name()
-			// Skip VCS, package, and build trees quickly.
 			if SkipDirName(base) {
 				return filepath.SkipDir
 			}
-			// If the directory path matches exclude as a prefix pattern, skip.
+			// Nested git repository: skip (but not the workspace root itself).
+			if isNestedGitRoot(path, rootAbs) {
+				res.NestedReposSkipped++
+				return filepath.SkipDir
+			}
 			if matchAny(exclude, rel+"/") || matchAny(exclude, rel) {
+				return filepath.SkipDir
+			}
+			if gi != nil && gi.ignored(rel, true) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -67,6 +79,9 @@ func Count(root string, cfg config.Config) (Result, error) {
 			return nil
 		}
 		if matchAny(exclude, rel) {
+			return nil
+		}
+		if gi != nil && gi.ignored(rel, false) {
 			return nil
 		}
 		if !matchAny(include, rel) {
@@ -83,8 +98,29 @@ func Count(root string, cfg config.Config) (Result, error) {
 	return res, err
 }
 
+func isNestedGitRoot(path, workspaceRoot string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	ws, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return false
+	}
+	if abs == ws {
+		return false
+	}
+	gitPath := filepath.Join(abs, ".git")
+	st, err := os.Stat(gitPath)
+	if err != nil {
+		return false
+	}
+	return st.IsDir() || st.Mode().IsRegular()
+}
+
 // SkipDirName is a fast path for directory basenames that never contribute
 // source under default policy (and are huge on real machines).
+// Note: hidden dirs are NOT blanket-skipped so .bashrc.d etc. remain visible.
 func SkipDirName(base string) bool {
 	switch base {
 	case ".git", ".hg", ".svn", ".jj",
@@ -95,16 +131,12 @@ func SkipDirName(base string) bool {
 		".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache",
 		".tox", ".eggs",
 		".idea", ".vscode", ".gradle",
-		"Android", // SDK trees when nested under home workspaces
-		"chromium": // browser profile blobs if nested
+		"Android",
+		"chromium":
 		return true
+	default:
+		return false
 	}
-	// Hidden directories (except those already handled) are rarely project source
-	// and dominate home-as-git-root scans.
-	if strings.HasPrefix(base, ".") {
-		return true
-	}
-	return false
 }
 
 func countFileLines(path string) (int, bool, error) {
@@ -125,11 +157,7 @@ func countFileLines(path string) (int, bool, error) {
 		return 0, false, nil
 	}
 
-	// Count newlines in probe + rest of file.
 	lines := bytes.Count(probe, []byte{'\n'})
-	// If file has content and does not end with newline, last line still counts
-	// when we finish reading; handle below.
-
 	rest, err := io.ReadAll(f)
 	if err != nil {
 		return 0, false, err
@@ -139,12 +167,10 @@ func countFileLines(path string) (int, bool, error) {
 	}
 	lines += bytes.Count(rest, []byte{'\n'})
 
-	// Combine for trailing partial line.
 	totalSize := int64(n) + int64(len(rest))
 	if totalSize == 0 {
 		return 0, true, nil
 	}
-	// If last byte is not newline, count the final line.
 	var last byte
 	if len(rest) > 0 {
 		last = rest[len(rest)-1]
@@ -158,8 +184,7 @@ func countFileLines(path string) (int, bool, error) {
 }
 
 type glob struct {
-	raw string
-	// simplified matching: ** and * and {a,b} brace expansion
+	raw      string
 	patterns []string
 }
 
@@ -186,7 +211,6 @@ func matchAny(globs []glob, rel string) bool {
 	return false
 }
 
-// expandBraces expands a single {a,b,c} segment once (enough for our defaults).
 func expandBraces(s string) []string {
 	start := strings.IndexByte(s, '{')
 	if start < 0 {
@@ -208,7 +232,6 @@ func expandBraces(s string) []string {
 	return out
 }
 
-// matchGlob supports ** (any path including /), * (within segment-ish), and exact.
 func matchGlob(pattern, name string) bool {
 	pattern = filepath.ToSlash(pattern)
 	name = filepath.ToSlash(name)
@@ -222,7 +245,6 @@ func matchGlobRec(pattern, name string) bool {
 		}
 		if strings.HasPrefix(pattern, "**/") {
 			rest := pattern[3:]
-			// empty match for **
 			if matchGlobRec(rest, name) {
 				return true
 			}
@@ -233,7 +255,6 @@ func matchGlobRec(pattern, name string) bool {
 					}
 				}
 			}
-			// also match ** at end of path component stream
 			if rest == "" {
 				return true
 			}
@@ -243,7 +264,6 @@ func matchGlobRec(pattern, name string) bool {
 			return true
 		}
 		if pattern[0] == '*' {
-			// * does not cross /
 			pattern = pattern[1:]
 			for i := 0; i <= len(name); i++ {
 				if i > 0 && name[i-1] == '/' {

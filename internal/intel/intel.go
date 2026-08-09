@@ -197,8 +197,19 @@ type Hit struct {
 	Content string
 }
 
+// SearchOpts filters search.
+type SearchOpts struct {
+	PathPrefix string // relative dir or file under root
+	Glob       string // optional extra glob like *.sh
+}
+
 // Search finds literal substring matches, capped.
 func Search(root, query string, cfg config.Config) ([]Hit, bool, error) {
+	return SearchOptsRun(root, query, cfg, SearchOpts{})
+}
+
+// SearchOptsRun is Search with filters.
+func SearchOptsRun(root, query string, cfg config.Config, opts SearchOpts) ([]Hit, bool, error) {
 	if query == "" {
 		return nil, false, fmt.Errorf("search requires a query")
 	}
@@ -206,15 +217,31 @@ func Search(root, query string, cfg config.Config) ([]Hit, bool, error) {
 	if max <= 0 {
 		max = 50
 	}
+	start := root
+	if opts.PathPrefix != "" {
+		p := opts.PathPrefix
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(root, p)
+		}
+		start = filepath.Clean(p)
+	}
+	var extra []measureGlob
+	_ = extra
 	var hits []Hit
 	truncated := false
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(start, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		if d.IsDir() {
 			if measure.SkipDirName(d.Name()) {
 				return filepath.SkipDir
+			}
+			// nested git
+			if path != root {
+				if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
@@ -226,8 +253,29 @@ func Search(root, query string, cfg config.Config) ([]Hit, bool, error) {
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
-		if !pathIncluded(cfg, rel) {
+		// Direct path under --path may map even if not in include when it's a single file map;
+		// for search still prefer include match OR under explicit path prefix.
+		if opts.PathPrefix == "" && !pathIncluded(cfg, rel) {
 			return nil
+		}
+		if opts.PathPrefix != "" && !pathIncluded(cfg, rel) {
+			// allow shell/config when explicitly scoped under path
+			if !strings.HasSuffix(rel, ".sh") && !strings.Contains(rel, ".bashrc") {
+				// still try include
+				if !pathIncluded(cfg, rel) {
+					// allow any text file under explicit path
+				}
+			}
+		}
+		if opts.Glob != "" {
+			ok, _ := filepath.Match(opts.Glob, filepath.Base(rel))
+			ok2, _ := filepath.Match(opts.Glob, rel)
+			if !ok && !ok2 {
+				// try ** style
+				if !matchSimpleGlob(opts.Glob, rel) {
+					return nil
+				}
+			}
 		}
 		data, err := os.ReadFile(path)
 		if err != nil || strings.Contains(string(data), "\x00") {
@@ -250,6 +298,88 @@ func Search(root, query string, cfg config.Config) ([]Hit, bool, error) {
 	return hits, truncated, nil
 }
 
+// Explain describes why a path is visible or not.
+func Explain(root, relOrAbs string, cfg config.Config) (string, error) {
+	abs, err := resolve(root, relOrAbs)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return "", err
+	}
+	rel = filepath.ToSlash(rel)
+	var b strings.Builder
+	fmt.Fprintf(&b, "path: %s\n", rel)
+	fmt.Fprintf(&b, "abs: %s\n", abs)
+	st, err := os.Stat(abs)
+	if err != nil {
+		fmt.Fprintf(&b, "exists: false\n")
+		fmt.Fprintf(&b, "error: %v\n", err)
+		return b.String(), nil
+	}
+	fmt.Fprintf(&b, "exists: true\n")
+	fmt.Fprintf(&b, "is_dir: %v\n", st.IsDir())
+	included := pathIncluded(cfg, rel)
+	fmt.Fprintf(&b, "include_match: %v\n", included)
+	if bin, err := isBin(abs); err == nil {
+		fmt.Fprintf(&b, "binary: %v\n", bin)
+	}
+	// nested git ancestor?
+	nested := false
+	dir := abs
+	if !st.IsDir() {
+		dir = filepath.Dir(abs)
+	}
+	for {
+		if dir == root || dir == filepath.Dir(dir) {
+			break
+		}
+		if dir != root {
+			if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+				nested = true
+				fmt.Fprintf(&b, "under_nested_git: %s\n", dir)
+				break
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	if !nested {
+		fmt.Fprintf(&b, "under_nested_git: false\n")
+	}
+	fmt.Fprintf(&b, "map_visible: %v\n", !st.IsDir())
+	fmt.Fprintf(&b, "search_visible: %v\n", included && !st.IsDir())
+	return b.String(), nil
+}
+
+func isBin(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	buf := make([]byte, 4096)
+	n, _ := f.Read(buf)
+	return strings.Contains(string(buf[:n]), "\x00"), nil
+}
+
+func matchSimpleGlob(pattern, name string) bool {
+	// reuse filepath match on full path segments
+	ok, _ := filepath.Match(pattern, name)
+	if ok {
+		return true
+	}
+	ok, _ = filepath.Match(pattern, filepath.Base(name))
+	return ok
+}
+
+// silence unused type if any
+type measureGlob struct{}
+
 func resolve(root, path string) (string, error) {
 	if filepath.IsAbs(path) {
 		return filepath.Clean(path), nil
@@ -262,10 +392,65 @@ func pathIncluded(cfg config.Config, rel string) bool {
 }
 
 func mapFile(root, abs, rel string) ([]Entry, error) {
+	base := filepath.Base(rel)
 	if strings.HasSuffix(rel, ".go") {
 		return mapGo(abs, rel)
 	}
+	if strings.HasSuffix(rel, ".sh") || strings.HasSuffix(rel, ".bash") ||
+		base == ".bashrc" || base == ".bash_profile" || base == ".profile" {
+		return mapBash(abs, rel)
+	}
 	return mapHeuristic(abs, rel)
+}
+
+var (
+	reBashFunc1 = regexp.MustCompile(`(?m)^[ \t]*(?:function[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*\([ \t]*\)[ \t]*\{`)
+	reBashFunc2 = regexp.MustCompile(`(?m)^[ \t]*function[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\{`)
+	reBashAlias = regexp.MustCompile(`(?m)^[ \t]*alias[ \t]+([A-Za-z_][A-Za-z0-9_]*)=`)
+)
+
+func mapBash(abs, rel string) ([]Entry, error) {
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	text := string(data)
+	lines := strings.Split(text, "\n")
+	var entries []Entry
+	seen := map[string]bool{}
+	add := func(kind, name string, line int) {
+		key := kind + ":" + name + ":" + fmt.Sprint(line)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		end := line + 20
+		if end > len(lines) {
+			end = len(lines)
+		}
+		entries = append(entries, Entry{
+			Path: rel, Kind: kind, Name: name, Line: line, End: end,
+			Label: fmt.Sprintf("%s %s", kind, name),
+		})
+	}
+	for i, line := range lines {
+		ln := i + 1
+		if m := reBashFunc1.FindStringSubmatch(line); len(m) == 2 {
+			add("function", m[1], ln)
+			continue
+		}
+		if m := reBashFunc2.FindStringSubmatch(line); len(m) == 2 {
+			add("function", m[1], ln)
+			continue
+		}
+		if m := reBashAlias.FindStringSubmatch(line); len(m) == 2 {
+			add("alias", m[1], ln)
+		}
+	}
+	if len(entries) == 0 {
+		return mapHeuristic(abs, rel)
+	}
+	return entries, nil
 }
 
 func mapGo(abs, rel string) ([]Entry, error) {

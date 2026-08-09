@@ -50,6 +50,12 @@ func Default() Config {
 			"**/*.{py,go,rs,java,kt,swift}",
 			"**/*.{c,cc,cpp,h,hpp}",
 			"**/*.{rb,php,cs}",
+			"**/*.{sh,bash}",
+			"**/.bashrc",
+			"**/.bash_profile",
+			"**/.profile",
+			"**/*.{toml,yml,yaml,json}",
+			"**/.gitignore",
 			"**/*.md",
 		},
 		Exclude: []string{

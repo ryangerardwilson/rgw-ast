@@ -16,15 +16,27 @@ import (
 const cacheMaxAge = 60 * time.Second
 
 type cacheEntry struct {
-	Root       string    `json:"root"`
-	Fingerprint string   `json:"fingerprint"`
-	LOC        int       `json:"loc"`
-	FileCount  int       `json:"file_count"`
-	StoredAt   time.Time `json:"stored_at"`
+	Root              string    `json:"root"`
+	Fingerprint       string    `json:"fingerprint"`
+	LOC               int       `json:"loc"`
+	FileCount         int       `json:"file_count"`
+	NestedReposSkipped  int       `json:"nested_repos_skipped"`
+	GitIgnoreActive   bool      `json:"gitignore_active"`
+	StoredAt          time.Time `json:"stored_at"`
+}
+
+// CountOpts controls cache behavior.
+type CountOpts struct {
+	Refresh bool
 }
 
 // CountCached returns Count results, using the XDG cache when valid.
 func CountCached(root string, cfg config.Config) (Result, error) {
+	return CountCachedOpts(root, cfg, CountOpts{})
+}
+
+// CountCachedOpts is CountCached with options.
+func CountCachedOpts(root string, cfg config.Config, opts CountOpts) (Result, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return Result{}, err
@@ -33,26 +45,42 @@ func CountCached(root string, cfg config.Config) (Result, error) {
 	if err != nil {
 		return Count(root, cfg)
 	}
-	if ent, ok := loadCache(cfg, root, fp); ok {
-		return Result{Root: root, LOC: ent.LOC, FileCount: ent.FileCount}, nil
+	if !opts.Refresh {
+		if ent, ok := loadCache(cfg, root, fp); ok {
+			age := time.Since(ent.StoredAt).Milliseconds()
+			return Result{
+				Root:              root,
+				LOC:               ent.LOC,
+				FileCount:         ent.FileCount,
+				NestedReposSkipped:  ent.NestedReposSkipped,
+				GitIgnoreActive:   ent.GitIgnoreActive,
+				CacheHit:          true,
+				CacheAgeMs:        age,
+			}, nil
+		}
 	}
 	res, err := Count(root, cfg)
 	if err != nil {
 		return res, err
 	}
 	_ = storeCache(cfg, cacheEntry{
-		Root:        root,
-		Fingerprint: fp,
-		LOC:         res.LOC,
-		FileCount:   res.FileCount,
-		StoredAt:    time.Now().UTC(),
+		Root:              root,
+		Fingerprint:       fp,
+		LOC:               res.LOC,
+		FileCount:         res.FileCount,
+		NestedReposSkipped:  res.NestedReposSkipped,
+		GitIgnoreActive:   res.GitIgnoreActive,
+		StoredAt:          time.Now().UTC(),
 	})
+	res.CacheHit = false
+	res.CacheAgeMs = 0
 	return res, nil
 }
 
 func fingerprint(root string, cfg config.Config) (string, error) {
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "root=%s\n", root)
+	_, _ = fmt.Fprintf(h, "v=2\n") // scope rules version
 	_, _ = fmt.Fprintf(h, "threshold=%d\n", cfg.ThresholdLOC)
 	_, _ = fmt.Fprintf(h, "include=%s\n", strings.Join(cfg.Include, "\x00"))
 	_, _ = fmt.Fprintf(h, "exclude=%s\n", strings.Join(cfg.Exclude, "\x00"))
@@ -61,7 +89,15 @@ func fingerprint(root string, cfg config.Config) (string, error) {
 		return "", err
 	}
 	_, _ = fmt.Fprintf(h, "root_mtime=%d\n", st.ModTime().UnixNano())
-	// git HEAD when present
+	// gitignore mtime
+	for _, p := range []string{
+		filepath.Join(root, ".gitignore"),
+		filepath.Join(root, ".git", "info", "exclude"),
+	} {
+		if st, err := os.Stat(p); err == nil {
+			_, _ = fmt.Fprintf(h, "%s=%d\n", p, st.ModTime().UnixNano())
+		}
+	}
 	headPath := filepath.Join(root, ".git", "HEAD")
 	if data, err := os.ReadFile(headPath); err == nil {
 		_, _ = h.Write(data)
@@ -76,7 +112,6 @@ func fingerprint(root string, cfg config.Config) (string, error) {
 			}
 		}
 	} else {
-		// gitfile worktree
 		if data, err := os.ReadFile(filepath.Join(root, ".git")); err == nil && strings.HasPrefix(string(data), "gitdir:") {
 			_, _ = h.Write(data)
 		}

@@ -5,32 +5,49 @@ import "io"
 const helpText = `rgw-ast — global AST-aware agent boundary
 
 Usage:
-  rgw-ast [--root <path>] help
-  rgw-ast [--root <path>] version
-  rgw-ast config
-  rgw-ast [--root <path>] status [--json]
-  rgw-ast [--root <path>] measure [--json]
-  rgw-ast [--root <path>] map [path]
-  rgw-ast [--root <path>] show <symbol|path:symbol>
-  rgw-ast [--root <path>] search <query>
-  rgw-ast [--root <path>] hash <file> [<file>...]
-  rgw-ast [--root <path>] read <file> --lines <start>-<end>
-  rgw-ast [--root <path>] patch <file> --expect-hash <sha256> --old <text> --new <text>
-  rgw-ast [--root <path>] hook   # PreToolUse JSON on stdin → decision JSON
+  rgw-ast [--root <path>] <command> [args]
 
-Policy is global only: ~/.config/rgw-ast/config.toml (or $XDG_CONFIG_HOME).
-No per-project config file is required. LOC is cached (~60s) under the XDG cache.
+Commands:
+  help | version | config
+  status [--json] [--refresh]
+  measure [--json] [--refresh]
+  map [path]
+  show <symbol|path:symbol>
+  search [--path <dir>] [--glob <pat>] <query>
+  search --help
+  explain <path>
+  hash <file>...
+  read <file> --lines <a>-<b> [--number] [--strict-lines]
+  create <file> --expect-absent (--from-file <f>|--stdin) [--parents]
+  append <file> --expect-hash <sha> (--from-file <f>|--stdin)
+  patch <file> --expect-hash <sha> (--old/--new | --old-file/--new-file | --ops-file <json>)
+  hook
 
-When enforcement is active (mode=auto and LOC >= threshold, default 5000):
-  - prefer map/show/search over whole-file reads
-  - read requires --lines for any non-binary text file
-  - patch requires a fresh --expect-hash
-  - agent hosts should pipe PreToolUse events to: rgw-ast hook
+Policy: ~/.config/rgw-ast/config.toml only.
+Measure honors .gitignore and stops at nested git repos. LOC cached ~60s.
 
-Exit codes: 0 success, 1 runtime error, 2 usage error
-(hook always exits 0 after writing a decision)
+When enforced (auto, LOC >= threshold):
+  map/show/search + read --lines; create/append/patch for mutation.
+  Hosts: pipe PreToolUse to rgw-ast hook.
+
+Exit: 0 ok, 1 error, 2 usage (hook always 0 after decision JSON)
+`
+
+const searchHelp = `rgw-ast search — literal substring search
+
+Usage:
+  rgw-ast search [--path <dir>] [--glob <pattern>] <query>
+  rgw-ast search --help
+
+Flags:
+  --path   limit walk to this workspace-relative directory or file
+  --glob   match basenames or paths (e.g. *.sh)
 `
 
 func WriteHelp(w io.Writer) {
 	_, _ = io.WriteString(w, helpText)
+}
+
+func WriteSearchHelp(w io.Writer) {
+	_, _ = io.WriteString(w, searchHelp)
 }

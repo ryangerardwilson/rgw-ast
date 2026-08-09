@@ -107,52 +107,58 @@ func LineCount(path string) (int, error) {
 
 // PatchExact replaces exactly one occurrence of old with new when hash matches.
 func PatchExact(path, expectHash, old, new string) (newHash string, err error) {
-	if old == "" {
-		return "", fmt.Errorf("--old must not be empty")
-	}
-	cur, err := HashFile(path)
-	if err != nil {
-		return "", err
-	}
-	if !strings.EqualFold(cur, expectHash) {
-		return "", fmt.Errorf("hash mismatch: expected %s, got %s", expectHash, cur)
+	return PatchOps(path, expectHash, []Op{{Old: old, New: new}})
+}
+
+// FormatReadRange returns content for [start,end] with optional line numbers and header.
+// If end-start+1 exceeds maxLines and strict is false, clamps and returns nextStart > 0.
+func FormatReadRange(path, rel string, start, end, maxLines int, number, strict bool) (text string, nextStart int, err error) {
+	if start < 1 || end < start {
+		return "", 0, fmt.Errorf("invalid line range %d-%d", start, end)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
-	content := string(data)
-	count := strings.Count(content, old)
-	if count == 0 {
-		return "", fmt.Errorf("old string not found")
+	lines := splitKeepEnds(string(data))
+	total := len(lines)
+	if start > total {
+		return "", 0, fmt.Errorf("start line %d past end of file (%d lines)", start, total)
 	}
-	if count > 1 {
-		return "", fmt.Errorf("old string matches %d times; must be unique", count)
+	if end > total {
+		end = total
 	}
-	updated := strings.Replace(content, old, new, 1)
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".rgw-ast-patch-*")
-	if err != nil {
-		return "", err
+	span := end - start + 1
+	if span > maxLines {
+		if strict {
+			return "", 0, fmt.Errorf("line range length %d exceeds max_read_lines %d", span, maxLines)
+		}
+		end = start + maxLines - 1
+		if end > total {
+			end = total
+		}
+		nextStart = end + 1
+		if nextStart > total {
+			nextStart = 0
+		}
 	}
-	tmpName := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpName)
-	}()
-	if _, err := io.WriteString(tmp, updated); err != nil {
-		tmp.Close()
-		return "", err
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s lines %d-%d\n", rel, start, end)
+	for i := start - 1; i < end; i++ {
+		line := lines[i]
+		if number {
+			// strip trailing newline for numbering, re-add
+			body := strings.TrimSuffix(line, "\n")
+			body = strings.TrimSuffix(body, "\r")
+			fmt.Fprintf(&b, "%6d\t%s\n", i+1, body)
+		} else {
+			b.WriteString(line)
+			if !strings.HasSuffix(line, "\n") && i == end-1 {
+				b.WriteByte('\n')
+			}
+		}
 	}
-	if err := tmp.Chmod(fileMode(path)); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return "", err
-	}
-	return HashFile(path)
+	return b.String(), nextStart, nil
 }
 
 func fileMode(path string) os.FileMode {

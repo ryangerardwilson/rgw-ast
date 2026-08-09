@@ -1,18 +1,4 @@
-# file-boundary Specification
-
-## Purpose
-TBD - created by archiving change initial-rgw-ast-cli. Update Purpose after archive.
-## Requirements
-### Requirement: Hash command
-`rgw-ast hash <file> [<file>...]` SHALL print SHA-256 hex digests for each
-path (workspace-relative or absolute under root) without printing file
-contents. Output format SHALL be `hash  path` per line (hash first).
-
-#### Scenario: Hash one file
-- **GIVEN** a readable file under the workspace root
-- **WHEN** the user runs `rgw-ast hash <path>`
-- **THEN** stdout SHALL contain one line with the SHA-256 hex and path
-- **AND** the process SHALL exit 0
+## MODIFIED Requirements
 
 ### Requirement: Bounded read
 `rgw-ast read <file> [--lines <start>-<end>]` SHALL print text from the file.
@@ -79,4 +65,3 @@ When enforcement is active and `require_hash_before_patch` is true, omitting
 - **GIVEN** two unique replacements and hash H
 - **WHEN** patch runs with `--ops-file` listing both against H
 - **THEN** both replacements SHALL apply in one write
-

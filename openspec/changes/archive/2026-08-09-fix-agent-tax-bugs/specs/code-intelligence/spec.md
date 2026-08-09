@@ -1,8 +1,5 @@
-# code-intelligence Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change initial-rgw-ast-cli. Update Purpose after archive.
-## Requirements
 ### Requirement: Map command
 `rgw-ast map [path]` SHALL list structural outline entries for a file or
 directory under the workspace root. Paths are relative to the workspace root
@@ -25,17 +22,6 @@ match include globs for directory walks.
 - **GIVEN** a shell file defining `foo()`
 - **WHEN** map runs on that file
 - **THEN** output SHALL include a function entry for `foo`
-
-### Requirement: Show command
-`rgw-ast show <target>` SHALL print the body of a named symbol or a
-`path:symbol` target when found under the workspace root. If multiple matches
-exist, the tool SHALL list candidates and exit 1 unless the target disambiguates
-by path.
-
-#### Scenario: Show known symbol
-- **GIVEN** a Go function `Foo` exists in the workspace
-- **WHEN** the user runs `rgw-ast show Foo` or `rgw-ast show path/to/file.go:Foo`
-- **THEN** stdout SHALL contain the function body source
 
 ### Requirement: Search command
 `rgw-ast search [flags] <query>` SHALL search workspace source (include/exclude
@@ -63,6 +49,8 @@ scanning.
 - **THEN** the process SHALL print help and exit 0
 - **AND** it MUST NOT treat `--help` as a search string
 
+## ADDED Requirements
+
 ### Requirement: Explain path
 `rgw-ast explain <path>` SHALL report whether the path is under the workspace
 root, matches include/exclude, is under a nested git root, is binary, and
@@ -71,4 +59,3 @@ whether map/search would see it.
 #### Scenario: Explain excluded path
 - **WHEN** explain runs on a path under node_modules
 - **THEN** output SHALL indicate exclusion or skip reason
-

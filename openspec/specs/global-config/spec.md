@@ -22,7 +22,9 @@ directory and write a default `config.toml` before proceeding.
 Default values SHALL include at least:
 - `threshold_loc = 5000`
 - `enforcement.mode = "auto"`
-- include globs covering common source extensions
+- include globs covering common application languages, Markdown, shell
+  (`.sh`, `.bash`, `.bashrc`, `.profile`), and common config extensions
+  (`.toml`, `.yml`, `.yaml`, `.json`)
 - exclude globs for `node_modules`, `.git`, `dist`, `build`, `.next`, `vendor`,
   `target`
 

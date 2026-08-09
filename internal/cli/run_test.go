@@ -80,14 +80,14 @@ func TestHelpVersionStatus(t *testing.T) {
 		t.Fatalf("json read code %d out=%q err=%q", code, out.String(), errB.String())
 	}
 
-	// bounded read ok
+	// bounded read ok (includes header line)
 	out.Reset()
 	errB.Reset()
 	if code := r.Run([]string{"read", "a.go", "--lines", "1-3"}); code != 0 {
 		t.Fatal(code, errB.String())
 	}
-	if strings.Count(out.String(), "\n") > 3 {
-		t.Fatalf("too many lines %q", out.String())
+	if !strings.Contains(out.String(), "lines 1-3") {
+		t.Fatalf("missing header %q", out.String())
 	}
 }
 
