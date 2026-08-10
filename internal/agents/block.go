@@ -27,9 +27,11 @@ If ` + "`\"enforced\": true`" + ` (default: auto when LOC ≥ 5000 under
    ` + "`rgw-ast patch <file> --expect-hash <sha> --old <text> --new <text>`" + `
    (or ` + "`--old-file`/`--new-file`/`--ops-file`" + `).
 4. **Create** new files with ` + "`rgw-ast create <file> --expect-absent --stdin|--from-file`" + `.
-5. **Do not** use direct Write/Edit/` + "`apply_patch`" + `/` + "`search_replace`" + `, ` + "`sed -i`" + `,
+5. **Delete** one verified regular file with ` + "`rgw-ast delete <file> --expect-hash <sha>`" + `;
+   add ` + "`--prune-empty`" + ` only when empty ancestor directories should also disappear.
+6. **Do not** use direct Write/Edit/` + "`apply_patch`" + `/` + "`search_replace`" + `, ` + "`sed -i`" + `,
    or shell redirection to mutate repo files while enforced.
-6. Hosts with PreToolUse hooks **must** pipe events to ` + "`rgw-ast hook`" + ` and
+7. Hosts with PreToolUse hooks **must** pipe events to ` + "`rgw-ast hook`" + ` and
    honor ` + "`\"permissionDecision\":\"deny\"`" + `.
 
 **Trusted generators:** required scaffolding tools (for example

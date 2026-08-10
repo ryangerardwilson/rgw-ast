@@ -109,6 +109,8 @@ func (r Runner) Run(args []string) int {
 		err = r.cmdAppend(rest)
 	case "patch":
 		err = r.cmdPatch(rest)
+	case "delete":
+		err = r.cmdDelete(rest)
 	case "exec":
 		err = r.cmdExec(rest)
 	case "doctor":
@@ -280,7 +282,7 @@ type statusOut struct {
 	Config             string `json:"config"`
 	CacheHit           bool   `json:"cache_hit"`
 	CacheAgeMs         int64  `json:"cache_age_ms"`
-	NestedReposSkipped  int    `json:"nested_repos_skipped"`
+	NestedReposSkipped int    `json:"nested_repos_skipped"`
 	GitIgnoreActive    bool   `json:"gitignore_active"`
 }
 
@@ -693,6 +695,38 @@ func (r Runner) cmdPatch(args []string) error {
 	return nil
 }
 
+func (r Runner) cmdDelete(args []string) error {
+	path, expectHash, pruneEmpty, err := parseDeleteArgs(args)
+	if err != nil {
+		return err
+	}
+	if expectHash == "" {
+		return usageError{"--expect-hash is required"}
+	}
+	cfg, _, wsRoot, err := r.workspace()
+	if err != nil {
+		return err
+	}
+	if _, err := r.measureFresh(cfg, wsRoot); err != nil {
+		return err
+	}
+	abs, err := files.ResolvePath(wsRoot, path)
+	if err != nil {
+		return err
+	}
+	pruned, err := files.DeleteExact(wsRoot, abs, expectHash, pruneEmpty)
+	if err != nil {
+		return err
+	}
+	rel, _ := filepath.Rel(wsRoot, abs)
+	_, _ = fmt.Fprintf(r.Out, "ok  deleted  %s\n", filepath.ToSlash(rel))
+	for _, dir := range pruned {
+		rel, _ := filepath.Rel(wsRoot, dir)
+		_, _ = fmt.Fprintf(r.Out, "ok  pruned  %s\n", filepath.ToSlash(rel))
+	}
+	return nil
+}
+
 func (r Runner) cmdHook(args []string) error {
 	if len(args) != 0 {
 		return usageError{"Use: rgw-ast hook"}
@@ -953,6 +987,31 @@ func parseAppendArgs(args []string) (path, hash, fromFile string, stdin bool, er
 		return "", "", "", false, usageError{"provide --from-file or --stdin"}
 	}
 	return path, hash, fromFile, stdin, nil
+}
+
+func parseDeleteArgs(args []string) (path, hash string, pruneEmpty bool, err error) {
+	if len(args) < 1 {
+		return "", "", false, usageError{"Use: rgw-ast delete <file> --expect-hash <sha> [--prune-empty]"}
+	}
+	path = args[0]
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--expect-hash":
+			if i+1 >= len(args) {
+				return "", "", false, usageError{"--expect-hash requires a value"}
+			}
+			hash = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--expect-hash="):
+			hash = strings.TrimPrefix(a, "--expect-hash=")
+		case a == "--prune-empty":
+			pruneEmpty = true
+		default:
+			return "", "", false, usageError{fmt.Sprintf("unexpected argument %q", a)}
+		}
+	}
+	return path, hash, pruneEmpty, nil
 }
 
 func parsePatchArgs(args []string) (path, hash, old, new, oldFile, newFile, opsFile string, err error) {

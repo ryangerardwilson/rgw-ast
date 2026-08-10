@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ryangerardwilson/rgw-ast/internal/config"
+	"github.com/ryangerardwilson/rgw-ast/internal/files"
 )
 
 func TestHelpVersionStatus(t *testing.T) {
@@ -173,5 +174,54 @@ func mustWrite(t *testing.T, path, body string) {
 	}
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDeleteFlow(t *testing.T) {
+	ws := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg := config.Default()
+	cfg.Enforcement.Mode = "never"
+	if err := config.Write(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(ws, "old", "nested", "f.txt")
+	mustWrite(t, path, "remove me\n")
+	h, err := files.HashFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errB bytes.Buffer
+	r := NewRunner(&out, &errB)
+	r.Cwd = t.TempDir()
+	r.ConfigPath = cfgPath
+	if code := r.Run([]string{"--root", ws, "delete", "old/nested/f.txt", "--expect-hash", h, "--prune-empty"}); code != ExitOK {
+		t.Fatalf("delete code %d out=%q err=%q", code, out.String(), errB.String())
+	}
+	if !strings.Contains(out.String(), "ok  deleted  old/nested/f.txt") || !strings.Contains(out.String(), "ok  pruned  old") {
+		t.Fatalf("unexpected output %q", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(ws, "old")); !os.IsNotExist(err) {
+		t.Fatalf("pruning failed: %v", err)
+	}
+	if _, err := os.Stat(ws); err != nil {
+		t.Fatalf("workspace root removed: %v", err)
+	}
+
+	path = filepath.Join(ws, "keep.txt")
+	mustWrite(t, path, "keep me\n")
+	out.Reset()
+	errB.Reset()
+	if code := r.Run([]string{"--root", ws, "delete", "keep.txt"}); code != ExitUsage {
+		t.Fatalf("missing-hash code %d err=%q", code, errB.String())
+	}
+	out.Reset()
+	errB.Reset()
+	if code := r.Run([]string{"--root", ws, "delete", "keep.txt", "--expect-hash", "deadbeef"}); code != ExitFail {
+		t.Fatalf("stale-hash code %d err=%q", code, errB.String())
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("stale hash removed file: %v", err)
 	}
 }

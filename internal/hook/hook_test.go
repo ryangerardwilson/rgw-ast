@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ryangerardwilson/rgw-ast/internal/config"
@@ -129,5 +130,31 @@ func TestHookAllowsQuotedRgwAstArguments(t *testing.T) {
 	}
 	if dec.PermissionDecision != "allow" {
 		t.Fatalf("expected allow for quoted content, got %s", out.String())
+	}
+}
+
+func TestHookRoutesDirectDeletionToGuardedCommand(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n//1\n//2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.ThresholdLOC = 1
+	cfg.Enforcement.Mode = "auto"
+	cfg.Cache.Dir = t.TempDir()
+	data, err := json.Marshal(Request{ToolName: "Delete", ToolInput: map[string]any{"path": "a.go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Run(bytes.NewReader(data), &out, cfg, root, root); err != nil {
+		t.Fatal(err)
+	}
+	var dec Decision
+	if err := json.Unmarshal(out.Bytes(), &dec); err != nil {
+		t.Fatal(err)
+	}
+	if dec.PermissionDecision != "deny" || !strings.Contains(dec.PermissionDecisionReason, "rgw-ast hash/patch/create/delete/exec") {
+		t.Fatalf("unexpected decision %s", out.String())
 	}
 }

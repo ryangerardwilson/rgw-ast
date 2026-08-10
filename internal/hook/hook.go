@@ -75,7 +75,7 @@ func Evaluate(req Request, cfg config.Config, cwd, rootOverride string) (Decisio
 	}
 
 	if denyTools[normalizeTool(name)] {
-		return deny("enforced workspace: use rgw-ast hash/patch/create/exec (not " + name + ")"), nil
+		return deny("enforced workspace: use rgw-ast hash/patch/create/delete/exec (not " + name + ")"), nil
 	}
 
 	if isShellish(name) {
@@ -86,7 +86,7 @@ func Evaluate(req Request, cfg config.Config, cwd, rootOverride string) (Decisio
 			return allow(), nil
 		}
 		if mutatesOutsideRGW(cmd) {
-			return deny("enforced workspace: shell mutation denied; use rgw-ast patch or rgw-ast exec -- <generator>"), nil
+			return deny("enforced workspace: shell mutation denied; use rgw-ast patch/delete or rgw-ast exec -- <generator>"), nil
 		}
 		return allow(), nil
 	}

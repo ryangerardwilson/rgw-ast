@@ -18,7 +18,7 @@ context: |
   - internal/measure — LOC counting with include/exclude
   - internal/enforce — enforced decision from mode + loc
   - internal/intel — map/show/search (heuristic + go/parser)
-  - internal/files — hash, bounded read, exact patch
+  - internal/files — hash, bounded read, exact patch, guarded delete
   - internal/version — stamped Version
   - install.sh — local install to ~/.local/bin/rgw-ast
 

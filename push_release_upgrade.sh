@@ -155,11 +155,7 @@ main() {
   gh release create "$tag" "$TMP_RELEASE_DIR/$ASSET_NAME" \
     --repo "$REPO_SLUG" \
     --title "$tag" \
-    --notes "Release ${tag}
-
-- Semantic versioning starts at ${version}
-- install.sh installs stamped release binaries
-- version --json reports version, commit, and build_time"
+    --generate-notes
 
   info "Installing ${APP} ${version} from GitHub..."
   bash ./install.sh version "$version"

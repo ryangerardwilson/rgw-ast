@@ -42,6 +42,7 @@ rgw-ast [--root <path>] create <file> --expect-absent (--from-file f|--stdin) [-
 rgw-ast [--root <path>] append <file> --expect-hash <sha> (--from-file f|--stdin)
 rgw-ast [--root <path>] patch <file> --expect-hash <sha> \
   (--old/--new | --old-file/--new-file | --ops-file ops.json)
+rgw-ast [--root <path>] delete <file> --expect-hash <sha> [--prune-empty]
 
 rgw-ast [--root <path>] exec [--json] -- <generator command...>
 rgw-ast [--root <path>] hook
@@ -52,6 +53,9 @@ rgw-ast [--root <path>] hook
 - Measure honors `.gitignore`, stops at nested git repos, and fingerprints
   dirty working trees (`git status --porcelain`) so nested edits invalidate cache.
 - Mutations and the PreToolUse hook recompute enforcement with a fresh measure.
+- Delete removes one verified regular file only. It rejects stale hashes,
+  directories, symlinks, special files, and outside-root paths; `--prune-empty`
+  removes only empty ancestors and never the workspace root.
 - When enforced, whole-file `read` is denied for any non-binary text.
 - Oversized `--lines` ranges clamp to `max_read_lines` and print `next_start`
   (use `--strict-lines` to fail hard). Prefer `--number` for citations.

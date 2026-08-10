@@ -2,11 +2,13 @@ package files
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Op is one exact text replacement.
@@ -118,6 +120,100 @@ func ParseOpsFile(path string) ([]Op, error) {
 		return nil, err
 	}
 	return ops, nil
+}
+
+// DeleteExact removes one verified regular file and optionally prunes empty
+// ancestors without ever removing the workspace root.
+func DeleteExact(root, path, expectHash string, pruneEmpty bool) ([]string, error) {
+	if expectHash == "" {
+		return nil, fmt.Errorf("expected hash is required")
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	abs, err := ResolvePath(rootAbs, path)
+	if err != nil {
+		return nil, err
+	}
+	if abs == rootAbs {
+		return nil, fmt.Errorf("workspace root cannot be deleted")
+	}
+	for dir := filepath.Dir(abs); dir != rootAbs; dir = filepath.Dir(dir) {
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("deletion path contains symlink ancestor: %s", dir)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("deletion parent is not a directory: %s", dir)
+		}
+	}
+
+	rootResolved, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace root: %w", err)
+	}
+	parentResolved, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return nil, fmt.Errorf("resolve deletion parent: %w", err)
+	}
+	inside, err := filepath.Rel(rootResolved, parentResolved)
+	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("path %q resolves outside workspace root", path)
+	}
+
+	info, err := os.Lstat(abs)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("delete requires a regular file: %s", path)
+	}
+	cur, err := HashFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(cur, expectHash) {
+		return nil, fmt.Errorf("hash mismatch: expected %s, got %s", expectHash, cur)
+	}
+	if err := os.Remove(abs); err != nil {
+		return nil, err
+	}
+	if !pruneEmpty {
+		return nil, nil
+	}
+	return pruneEmptyAncestors(rootAbs, filepath.Dir(abs))
+}
+
+func pruneEmptyAncestors(root, start string) ([]string, error) {
+	var pruned []string
+	for dir := start; dir != root; dir = filepath.Dir(dir) {
+		inside, err := filepath.Rel(root, dir)
+		if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+			return pruned, fmt.Errorf("prune path escapes workspace root: %s", dir)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return pruned, err
+		}
+		if len(entries) != 0 {
+			break
+		}
+		if err := os.Remove(dir); err != nil {
+			if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
+				break
+			}
+			return pruned, err
+		}
+		pruned = append(pruned, dir)
+	}
+	return pruned, nil
 }
 
 // ReadAllFile is os.ReadFile with clearer errors.

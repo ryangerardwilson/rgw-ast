@@ -23,6 +23,7 @@ Commands:
   create <file> --expect-absent (--from-file <f>|--stdin) [--parents]
   append <file> --expect-hash <sha> (--from-file <f>|--stdin)
   patch <file> --expect-hash <sha> (--old/--new | --old-file/--new-file | --ops-file <json>)
+  delete <file> --expect-hash <sha> [--prune-empty]
   exec [--json] -- <generator command...>
   hook
 
@@ -31,7 +32,7 @@ Measure honors .gitignore, stops at nested git repos, fingerprints dirty trees.
 LOC cached ~60s; mutations/hook refresh enforcement. generators.allow lists exec.
 
 When enforced:
-  map/show/search + read --lines; create/append/patch for edits;
+  map/show/search + read --lines; create/append/patch/delete for mutations;
   generators only via: rgw-ast exec -- <cmd>
   Hosts: pipe PreToolUse to rgw-ast hook.
 
